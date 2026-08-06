@@ -273,16 +273,33 @@ func runCanvasImageTask(task model.CanvasImageTask, user model.AuthUser, body []
 		saveFailedCanvasImageTask(task, err.Error(), string(payload))
 		return
 	}
+	storageKey := ""
+	if imageData, detectedMimeType, fetchErr := imageCandidateBytes(imageURL); fetchErr == nil && len(imageData) > 0 {
+		if mimeType == "" {
+			mimeType = detectedMimeType
+		}
+		bytes = int64(len(imageData))
+		task.Width, task.Height = imageSize(imageData)
+		object, uploadErr := service.UploadUserStorageObject(service.WithUser(context.Background(), user), "canvas-image"+extensionForTaskMime(mimeType), mimeType, imageData)
+		if uploadErr != nil {
+			log.Printf("upload canvas image to storage failed: user=%s task=%s err=%v", user.ID, task.ID, uploadErr)
+		} else {
+			imageURL = object.URL
+			storageKey = object.StorageKey
+			mimeType = object.MimeType
+			bytes = object.Bytes
+		}
+	} else if fetchErr != nil {
+		log.Printf("read canvas image for storage failed: user=%s task=%s err=%v", user.ID, task.ID, fetchErr)
+	}
 	task.Status = "completed"
 	task.Progress = 100
 	task.CompletedAt = taskTime()
 	task.ResponseBody = string(payload)
 	task.ImageURL = imageURL
-	task.StorageKey = ""
+	task.StorageKey = storageKey
 	task.MimeType = mimeType
 	task.Bytes = bytes
-	task.Width = 0
-	task.Height = 0
 	task.Error = ""
 	task.ErrorDetail = ""
 	_, _ = service.SaveCanvasImageTask(task)
@@ -632,7 +649,11 @@ func collectImageCandidates(value any, depth int) []string {
 
 func imageCandidateBytes(value string) ([]byte, string, error) {
 	if strings.HasPrefix(value, "http://") || strings.HasPrefix(value, "https://") {
-		response, err := http.Get(value)
+		request, err := http.NewRequest(http.MethodGet, value, nil)
+		if err != nil {
+			return nil, "", err
+		}
+		response, err := service.SafeProxyHTTPClient().Do(request)
 		if err != nil {
 			return nil, "", err
 		}

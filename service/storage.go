@@ -19,10 +19,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/tigerowo/infinite-canvas/model"
-	"github.com/tigerowo/infinite-canvas/repository"
 	"github.com/google/uuid"
 	"github.com/robfig/cron/v3"
+	"github.com/tigerowo/infinite-canvas/model"
+	"github.com/tigerowo/infinite-canvas/repository"
 	"gorm.io/gorm"
 )
 
@@ -172,6 +172,38 @@ func SaveCurrentUserStorageProvider(ctx context.Context, incoming UserStoragePro
 // UploadStorageObject 上传对象到存储。
 func UploadStorageObject(ctx context.Context, filename string, contentType string, data []byte) (UploadedStorageObject, error) {
 	return UploadStorageObjectWithProvider(ctx, filename, contentType, data, nil)
+}
+
+// UploadUserStorageObject 为已登录用户选择账号存储或管理员允许的全局存储。
+func UploadUserStorageObject(ctx context.Context, filename string, contentType string, data []byte) (UploadedStorageObject, error) {
+	user, ok := UserFromContext(ctx)
+	if !ok || user.ID == "" || user.Role == model.UserRoleGuest {
+		return UploadedStorageObject{}, errors.New("请先登录")
+	}
+	settings, err := repository.GetSettings()
+	if err != nil {
+		return UploadedStorageObject{}, err
+	}
+	storage := normalizePrivateStorageSetting(settings.Private.Storage)
+	if storage.AllowUserProvider {
+		config, found, configErr := repository.GetUserConfig(user.ID)
+		if configErr != nil {
+			return UploadedStorageObject{}, configErr
+		}
+		if found {
+			providers := readUserStorageProviders(config.StorageProvider)
+			for _, provider := range []*StorageObjectProviderInput{providers.S3, providers.WebDAV} {
+				if provider == nil {
+					continue
+				}
+				configured := normalizeUserStorageProvider(*provider, ctx)
+				if configured.Enabled && storageProviderConfigured(configured) {
+					return UploadStorageObjectWithProvider(ctx, filename, contentType, data, provider)
+				}
+			}
+		}
+	}
+	return UploadStorageObject(ctx, filename, contentType, data)
 }
 
 // UploadStorageObjectWithProvider 上传对象到存储（可选用户自定义 Provider）。
