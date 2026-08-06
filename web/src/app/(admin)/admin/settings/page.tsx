@@ -7,7 +7,7 @@ import dynamic from "next/dynamic";
 import { useEffect, useMemo, useState } from "react";
 import { EditorView } from "@uiw/react-codemirror";
 
-import { fetchAdminSettings, fetchChannelModels, measureAdminStorageProvider, saveAdminSettings, testChannelModel, type AdminModelChannel, type AdminModelCost, type AdminSettings, type AdminStorageProvider } from "@/services/api/admin";
+import { checkAdminSenluopanAuth, fetchAdminSettings, fetchChannelModels, measureAdminStorageProvider, saveAdminSettings, testChannelModel, type AdminModelChannel, type AdminModelCost, type AdminSettings, type AdminStorageProvider } from "@/services/api/admin";
 import { useUserStore } from "@/stores/use-user-store";
 
 const CodeMirror = dynamic(() => import("@uiw/react-codemirror"), { ssr: false });
@@ -79,6 +79,8 @@ export default function AdminSettingsPage() {
     const [isLoading, setIsLoading] = useState(false);
     const [isSaving, setIsSaving] = useState(false);
     const [measuringProviderIndex, setMeasuringProviderIndex] = useState<number | null>(null);
+    const [checkingSenluopanIndex, setCheckingSenluopanIndex] = useState<number | null>(null);
+    const [senluopanAuthStatus, setSenluopanAuthStatus] = useState<Record<number, string>>({});
     const [modelCosts, setModelCosts] = useState<AdminModelCost[]>([]);
     const [knownModels, setKnownModels] = useState<string[]>([]);
     const publicModels = Form.useWatch(["public", "modelChannel", "availableModels"], form) || [];
@@ -382,6 +384,43 @@ export default function AdminSettingsPage() {
         }
     }
 
+    async function checkSenluopanProviderAt(index: number) {
+        if (!token) return;
+        const provider = normalizeStorageProvider(form.getFieldValue(["private", "storage", "providers", index]));
+        setCheckingSenluopanIndex(index);
+        try {
+            const result = await checkAdminSenluopanAuth(token, { index, provider });
+            form.setFieldValue(["private", "storage", "providers", index, "apiAccessExpires"], result.accessExpires);
+            form.setFieldValue(["private", "storage", "providers", index, "apiRefreshExpires"], result.refreshExpires);
+            if (result.renewed && result.persisted) {
+                form.setFieldValue(["private", "storage", "providers", index, "apiAccessToken"], "");
+                form.setFieldValue(["private", "storage", "providers", index, "apiRefreshToken"], "");
+            }
+            setSenluopanAuthStatus((current) => ({
+                ...current,
+                [index]: (result.renewed ? "认证已更新" : "认证有效") + "，空间 " + formatStorageBytes(result.usedBytes) + " / " + formatStorageBytes(result.totalBytes) + "，Access Token " + formatSenluopanExpiry(result.accessExpires),
+            }));
+            message.success(result.renewed ? "森络盘认证已更新" : "森络盘认证有效");
+        } catch (error) {
+            setSenluopanAuthStatus((current) => {
+                const next = { ...current };
+                delete next[index];
+                return next;
+            });
+            message.error(error instanceof Error ? error.message : "森络盘认证检查失败");
+        } finally {
+            setCheckingSenluopanIndex(null);
+        }
+    }
+
+    function clearSenluopanAuthStatus(index: number) {
+        setSenluopanAuthStatus((current) => {
+            const next = { ...current };
+            delete next[index];
+            return next;
+        });
+    }
+
     return (
         <main className="p-3 md:p-6">
             <Flex vertical gap={16}>
@@ -667,6 +706,7 @@ export default function AdminSettingsPage() {
                                                 {fields.map((field) => {
                                                     const provider = storageProviders[field.name] || emptyS3StorageProvider;
                                                     const isWebDAV = provider.type === "webdav";
+                                                    const hasSenluopanConfig = isWebDAV && Boolean(provider.apiEndpoint.trim());
                                                     const blockedByOtherType = storageProviders.some((item: AdminStorageProvider, index: number) => index !== field.name && item.enabled && item.type !== provider.type);
                                                     const weightField = (
                                                         <Col xs={24} md={3}>
@@ -685,7 +725,12 @@ export default function AdminSettingsPage() {
                                                                     <Button size="small" loading={measuringProviderIndex === field.name} onClick={() => void measureStorageProviderAt(field.name)}>
                                                                         统计容量
                                                                     </Button>
-                                                                    <Button danger size="small" icon={<DeleteOutlined />} onClick={() => remove(field.name)} />
+                                                                    {hasSenluopanConfig ? (
+                                                                        <Button size="small" loading={checkingSenluopanIndex === field.name} onClick={() => void checkSenluopanProviderAt(field.name)}>
+                                                                            检查认证
+                                                                        </Button>
+                                                                    ) : null}
+                                                                    <Button danger size="small" icon={<DeleteOutlined />} onClick={() => { remove(field.name); setSenluopanAuthStatus({}); }} />
                                                                 </Flex>
                                                             }
                                                         >
@@ -742,24 +787,29 @@ export default function AdminSettingsPage() {
                                                                         </Col>
                                                                         <Col xs={24} md={12}>
                                                                             <Form.Item name={[field.name, "apiEndpoint"]} label="森络盘 API 地址">
-                                                                                <Input placeholder="https://www.senluopan.com/api/v4" />
+                                                                                <Input placeholder="https://www.senluopan.com/api/v4" onChange={() => clearSenluopanAuthStatus(field.name)} />
                                                                             </Form.Item>
                                                                         </Col>
                                                                         <Col xs={24} md={6}>
                                                                             <Form.Item name={[field.name, "apiEmail"]} label="森络盘账号邮箱">
-                                                                                <Input />
+                                                                                <Input onChange={() => clearSenluopanAuthStatus(field.name)} />
                                                                             </Form.Item>
                                                                         </Col>
                                                                         <Col xs={24} md={6}>
                                                                             <Form.Item name={[field.name, "apiPassword"]} label="森络盘账号密码">
-                                                                                <Input.Password placeholder="留空沿用已保存密码" />
+                                                                                <Input.Password placeholder="留空沿用已保存密码" onChange={() => clearSenluopanAuthStatus(field.name)} />
                                                                             </Form.Item>
                                                                         </Col>
                                                                         <Col xs={24} md={12}>
                                                                             <Form.Item name={[field.name, "apiAccessToken"]} label="森络盘 Access Token">
-                                                                                <Input.Password placeholder="留空沿用已保存令牌" />
+                                                                                <Input.Password placeholder="留空沿用已保存令牌" onChange={() => clearSenluopanAuthStatus(field.name)} />
                                                                             </Form.Item>
                                                                         </Col>
+                                                                        {hasSenluopanConfig && senluopanAuthStatus[field.name] ? (
+                                                                            <Col xs={24}>
+                                                                                <Typography.Text type="secondary">{senluopanAuthStatus[field.name]}</Typography.Text>
+                                                                            </Col>
+                                                                        ) : null}
                                                                     </>
                                                                 ) : (
                                                                     <>
@@ -1287,6 +1337,10 @@ function modelSummary(models: string[]) {
     if (!models.length) return "未配置模型";
     const preview = models.slice(0, 3).join(", ");
     return models.length > 3 ? `${models.length} 个模型：${preview}...` : preview;
+}
+
+function formatSenluopanExpiry(expires: number) {
+    return expires > 0 ? "有效期至 " + new Date(expires * 1000).toLocaleString("zh-CN", { hour12: false }) : "有效期由服务端管理";
 }
 
 function formatStorageBytes(bytes: number) {

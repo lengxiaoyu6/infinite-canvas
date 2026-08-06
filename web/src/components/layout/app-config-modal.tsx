@@ -5,7 +5,7 @@ import { RefreshCw } from "lucide-react";
 import { useEffect, useState } from "react";
 
 import { ModelPicker } from "@/components/model-picker";
-import { fetchUserConfig, measureUserStorageProvider, syncUserModelConfig, syncUserStorageProvider } from "@/services/api/user-config";
+import { checkUserSenluopanAuth, fetchUserConfig, measureUserStorageProvider, syncUserModelConfig, syncUserStorageProvider } from "@/services/api/user-config";
 import { clearStorageConfigCache as clearFileStorageCache } from "@/services/file-storage";
 import { clearStorageConfigCache as clearImageStorageCache, defaultUserStorageProvider, defaultUserWebDAVStorageProvider, loadStorageConfig, loadUserS3StorageProvider, loadUserWebDAVStorageProvider, saveUserStorageProvider, saveUserWebDAVStorageProvider, type UserStorageProvider } from "@/services/image-storage";
 import { audioFormatOptions, audioVoiceOptions, normalizeAudioSpeedValue } from "@/lib/audio-generation";
@@ -40,6 +40,8 @@ export function AppConfigModal() {
     const [measuringStorageType, setMeasuringStorageType] = useState<"s3" | "webdav" | null>(null);
     const [storageUsageText, setStorageUsageText] = useState("");
     const [webDAVStorageUsageText, setWebDAVStorageUsageText] = useState("");
+    const [checkingSenluopan, setCheckingSenluopan] = useState(false);
+    const [senluopanAuthText, setSenluopanAuthText] = useState("");
     const config = useConfigStore((state) => state.config);
     const updateConfig = useConfigStore((state) => state.updateConfig);
     const switchModelConfigOwner = useConfigStore((state) => state.switchModelConfigOwner);
@@ -61,6 +63,7 @@ export function AppConfigModal() {
     const canUseRemoteChannel = isLoggedIn && (user?.role === "admin" || modelChannel?.allowUserRemoteChannel === true);
     const allowCustomChannel = modelChannel?.allowCustomChannel === true;
     const effectiveMode = canUseRemoteChannel && allowCustomChannel ? config.channelMode : canUseRemoteChannel ? "remote" : "local";
+    const hasSenluopanConfig = Boolean(userWebDAVStorage.apiEndpoint.trim());
     const modelConfig = effectiveConfig;
     const selectedChannelIds = new Set(modelGroups.map((group) => modelConfig[group.channelKey]).filter(Boolean));
     const selectedPersonalChannels = effectiveMode === "local" ? modelConfig.publicChannels.filter((channel) => selectedChannelIds.has(channel.id)) : [];
@@ -213,6 +216,37 @@ export function AppConfigModal() {
         }
     };
 
+    const checkSenluopanAuth = async () => {
+        if (!token) {
+            message.warning("请先登录后再检查认证");
+            return;
+        }
+        setCheckingSenluopan(true);
+        try {
+            const result = await checkUserSenluopanAuth(token, userWebDAVStorage);
+            const next = {
+                ...userWebDAVStorage,
+                apiAccessExpires: result.accessExpires,
+                apiRefreshExpires: result.refreshExpires,
+                ...(result.renewed && result.persisted ? { apiAccessToken: "", apiRefreshToken: "" } : {}),
+            };
+            setUserWebDAVStorage(next);
+            saveUserWebDAVStorageProvider(next);
+            setSenluopanAuthText((result.renewed ? "认证已更新" : "认证有效") + "，空间 " + formatBytes(result.usedBytes) + " / " + formatBytes(result.totalBytes) + "，Access Token " + formatTokenExpiry(result.accessExpires));
+            message.success(result.renewed ? "森络盘认证已更新" : "森络盘认证有效");
+        } catch (error) {
+            setSenluopanAuthText("");
+            message.error(error instanceof Error ? error.message : "森络盘认证检查失败");
+        } finally {
+            setCheckingSenluopan(false);
+        }
+    };
+
+    const updateSenluopanConfig = (field: "apiEndpoint" | "apiEmail" | "apiPassword" | "apiAccessToken", value: string) => {
+        setSenluopanAuthText("");
+        setUserWebDAVStorage((current) => ({ ...current, [field]: value }));
+    };
+
     return (
         <Modal
             title={
@@ -352,12 +386,18 @@ export function AppConfigModal() {
                                         <div className="mt-1 text-xs text-stone-500">
                                             开启后，新生成图片和媒体文件会优先保存到你的 WebDAV。
                                             {webDAVStorageUsageText ? <>当前容量：{webDAVStorageUsageText}</> : null}
+                                            {hasSenluopanConfig && senluopanAuthText ? <span className="mt-1 block">{senluopanAuthText}</span> : null}
                                         </div>
                                     </div>
                                     <div className="flex shrink-0 flex-wrap items-center justify-end gap-2">
                                         <Button size="small" loading={measuringStorageType === "webdav"} onClick={() => void measureStorage(userWebDAVStorage)}>
                                             统计容量
                                         </Button>
+                                        {hasSenluopanConfig ? (
+                                            <Button size="small" loading={checkingSenluopan} onClick={() => void checkSenluopanAuth()}>
+                                                检查认证
+                                            </Button>
+                                        ) : null}
                                         <span className="text-xs text-stone-500">自动同步</span>
                                         <Switch size="small" checked={config.syncWebDAVStorageConfig} onChange={(checked) => updateConfig("syncWebDAVStorageConfig", checked)} />
                                         <Switch checked={userWebDAVStorage.enabled} disabled={userStorage.enabled} onChange={(enabled) => setUserWebDAVStorage((value) => ({ ...value, enabled }))} />
@@ -370,10 +410,10 @@ export function AppConfigModal() {
                                         <Input value={userWebDAVStorage.pathPrefix} placeholder="远程目录" onChange={(event) => setUserWebDAVStorage((value) => ({ ...value, pathPrefix: event.target.value }))} />
                                         <Input value={userWebDAVStorage.username} placeholder="用户名" onChange={(event) => setUserWebDAVStorage((value) => ({ ...value, username: event.target.value }))} />
                                         <Input.Password value={userWebDAVStorage.password} placeholder="密码 / 应用密码" onChange={(event) => setUserWebDAVStorage((value) => ({ ...value, password: event.target.value }))} />
-                                        <Input value={userWebDAVStorage.apiEndpoint} placeholder="森络盘 API 地址，例如 https://www.senluopan.com/api/v4" onChange={(event) => setUserWebDAVStorage((value) => ({ ...value, apiEndpoint: event.target.value }))} />
-                                        <Input value={userWebDAVStorage.apiEmail} placeholder="森络盘账号邮箱" onChange={(event) => setUserWebDAVStorage((value) => ({ ...value, apiEmail: event.target.value }))} />
-                                        <Input.Password value={userWebDAVStorage.apiPassword} placeholder="森络盘账号密码" onChange={(event) => setUserWebDAVStorage((value) => ({ ...value, apiPassword: event.target.value }))} />
-                                        <Input.Password value={userWebDAVStorage.apiAccessToken} placeholder="森络盘 Access Token" onChange={(event) => setUserWebDAVStorage((value) => ({ ...value, apiAccessToken: event.target.value }))} />
+                                        <Input value={userWebDAVStorage.apiEndpoint} placeholder="森络盘 API 地址，例如 https://www.senluopan.com/api/v4" onChange={(event) => updateSenluopanConfig("apiEndpoint", event.target.value)} />
+                                        <Input value={userWebDAVStorage.apiEmail} placeholder="森络盘账号邮箱" onChange={(event) => updateSenluopanConfig("apiEmail", event.target.value)} />
+                                        <Input.Password value={userWebDAVStorage.apiPassword} placeholder="森络盘账号密码" onChange={(event) => updateSenluopanConfig("apiPassword", event.target.value)} />
+                                        <Input.Password value={userWebDAVStorage.apiAccessToken} placeholder="森络盘 Access Token" onChange={(event) => updateSenluopanConfig("apiAccessToken", event.target.value)} />
                                     </div>
                                 ) : null}
                             </section>
@@ -427,6 +467,10 @@ function normalizeImageCount(value: string) {
     return String(Math.max(1, Math.min(15, Math.floor(Math.abs(Number(value)) || 3))));
 }
 
+
+function formatTokenExpiry(expires: number) {
+    return expires > 0 ? "有效期至 " + new Date(expires * 1000).toLocaleString("zh-CN", { hour12: false }) : "有效期由服务端管理";
+}
 
 function formatBytes(bytes: number) {
     if (bytes < 1024) return `${bytes}B`;

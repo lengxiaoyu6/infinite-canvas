@@ -116,3 +116,18 @@ export async function draftUserWorkflow<T>(
 ) {
     return apiPost<WorkflowAgentDraftResponse<T>>("/api/v1/workflows/agent-draft", payload, token);
 }
+
+export type SenluopanAuthStatus = {
+    valid: boolean;
+    renewed: boolean;
+    persisted: boolean;
+    accessExpires: number;
+    refreshExpires: number;
+    totalBytes: number;
+    usedBytes: number;
+    checkedAt: string;
+};
+
+export async function checkUserSenluopanAuth(token: string, provider: UserWebDAVStorageProvider) {
+    return apiPost<SenluopanAuthStatus>("/api/v1/storage/senluopan-status", { provider: toProviderPayload(provider) }, token);
+}

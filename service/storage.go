@@ -147,6 +147,28 @@ func SaveCurrentUserStorageProvider(ctx context.Context, incoming UserStoragePro
 	if incoming.WebDAV != nil {
 		provider := *incoming.WebDAV
 		provider.Type = model.StorageProviderTypeWebDAV
+		if saved := providers.WebDAV; sameUserSenluopanProvider(saved, normalizeUserStorageProviderForOwner(provider, user.ID)) {
+			if strings.TrimSpace(provider.APIEmail) == "" {
+				provider.APIEmail = saved.APIEmail
+			}
+			if strings.TrimSpace(provider.APIPassword) == "" {
+				provider.APIPassword = saved.APIPassword
+			}
+			if strings.TrimSpace(provider.APIEmail) == strings.TrimSpace(saved.APIEmail) {
+				if strings.TrimSpace(provider.APIAccessToken) == "" {
+					provider.APIAccessToken = saved.APIAccessToken
+				}
+				if strings.TrimSpace(provider.APIRefreshToken) == "" {
+					provider.APIRefreshToken = saved.APIRefreshToken
+				}
+				if provider.APIAccessExpires <= 0 {
+					provider.APIAccessExpires = saved.APIAccessExpires
+				}
+				if provider.APIRefreshExpires <= 0 {
+					provider.APIRefreshExpires = saved.APIRefreshExpires
+				}
+			}
+		}
 		providers.WebDAV = &provider
 	}
 	if err := validateUserStorageProviderTypes(providers); err != nil {
@@ -802,7 +824,7 @@ func mergePersistedSenluopanCredentials(provider model.StorageProvider) model.St
 	if provider.Type == model.StorageProviderTypeWebDAV {
 		saved = inputs.WebDAV
 	}
-	if saved == nil || strings.TrimSpace(saved.Endpoint) != strings.TrimSpace(provider.Endpoint) || strings.TrimSpace(saved.PathPrefix) != strings.TrimSpace(provider.PathPrefix) {
+	if !sameUserSenluopanProvider(saved, provider) {
 		return provider
 	}
 	if strings.TrimSpace(provider.APIEmail) == "" {
@@ -811,31 +833,31 @@ func mergePersistedSenluopanCredentials(provider model.StorageProvider) model.St
 	if strings.TrimSpace(provider.APIPassword) == "" {
 		provider.APIPassword = saved.APIPassword
 	}
-	if provider.APIEmail == saved.APIEmail && provider.APIPassword == saved.APIPassword {
-		if strings.TrimSpace(saved.APIAccessToken) != "" {
+	if strings.TrimSpace(provider.APIEmail) == strings.TrimSpace(saved.APIEmail) {
+		if strings.TrimSpace(provider.APIAccessToken) == "" {
 			provider.APIAccessToken = saved.APIAccessToken
 		}
-		if strings.TrimSpace(saved.APIRefreshToken) != "" {
+		if strings.TrimSpace(provider.APIRefreshToken) == "" {
 			provider.APIRefreshToken = saved.APIRefreshToken
 		}
-		if saved.APIAccessExpires > 0 {
+		if provider.APIAccessExpires <= 0 {
 			provider.APIAccessExpires = saved.APIAccessExpires
 		}
-		if saved.APIRefreshExpires > 0 {
+		if provider.APIRefreshExpires <= 0 {
 			provider.APIRefreshExpires = saved.APIRefreshExpires
 		}
 	}
 	return provider
 }
 
-func persistSenluopanProvider(provider model.StorageProvider) error {
+func persistSenluopanProvider(provider model.StorageProvider) (bool, error) {
 	if provider.Type != model.StorageProviderTypeWebDAV {
-		return nil
+		return false, nil
 	}
 	if owner := strings.TrimSpace(provider.OwnerUserID); owner != "" && owner != "anonymous" {
 		config, _, err := repository.GetUserConfig(owner)
 		if err != nil {
-			return err
+			return false, err
 		}
 		if config.UserID == "" {
 			config.UserID = owner
@@ -845,20 +867,22 @@ func persistSenluopanProvider(provider model.StorageProvider) error {
 		if providers.WebDAV == nil {
 			input := StorageObjectProviderInput{Type: model.StorageProviderTypeWebDAV, Name: provider.Name, Endpoint: provider.Endpoint, PathPrefix: provider.PathPrefix}
 			providers.WebDAV = &input
+		} else if !sameUserSenluopanProvider(providers.WebDAV, provider) {
+			return false, nil
 		}
 		copySenluopanCredentials(providers.WebDAV, provider)
 		raw, err := json.Marshal(providers)
 		if err != nil {
-			return err
+			return false, err
 		}
 		config.StorageProvider = string(raw)
 		config.UpdatedAt = now()
 		_, err = repository.SaveUserConfig(config)
-		return err
+		return true, err
 	}
 	settings, err := repository.GetSettings()
 	if err != nil {
-		return err
+		return false, err
 	}
 	settings = normalizeSettings(settings)
 	for index := range settings.Private.Storage.Providers {
@@ -868,9 +892,19 @@ func persistSenluopanProvider(provider model.StorageProvider) error {
 		}
 		copySenluopanProviderCredentials(&settings.Private.Storage.Providers[index], provider)
 		_, err = repository.SaveSettings(settings, now())
-		return err
+		return true, err
 	}
-	return nil
+	return false, nil
+}
+
+func sameUserSenluopanProvider(saved *StorageObjectProviderInput, provider model.StorageProvider) bool {
+	if saved == nil {
+		return false
+	}
+	input := *saved
+	input.Type = model.StorageProviderTypeWebDAV
+	current := normalizeUserStorageProviderForOwner(input, provider.OwnerUserID)
+	return current.Endpoint == provider.Endpoint && current.PathPrefix == provider.PathPrefix && current.APIEndpoint == provider.APIEndpoint
 }
 
 func copySenluopanCredentials(target *StorageObjectProviderInput, provider model.StorageProvider) {
@@ -952,4 +986,55 @@ func extensionForContentType(contentType string) string {
 	default:
 		return ".bin"
 	}
+}
+
+// CheckUserSenluopanAuth 检查当前用户 WebDAV 配置中的森络盘认证。
+func CheckUserSenluopanAuth(ctx context.Context, providerInput StorageObjectProviderInput) (SenluopanAuthStatus, error) {
+	provider := mergePersistedSenluopanCredentials(normalizeUserStorageProvider(providerInput, ctx))
+	if provider.Type != model.StorageProviderTypeWebDAV {
+		return SenluopanAuthStatus{}, errors.New("仅 WebDAV 配置支持森络盘认证检查")
+	}
+	return CheckSenluopanProviderAuth(provider)
+}
+
+// CheckAdminSenluopanAuth 检查管理员 WebDAV 配置中的森络盘认证。
+func CheckAdminSenluopanAuth(index int, providerInput *model.StorageProvider) (SenluopanAuthStatus, error) {
+	settings, err := repository.GetSettings()
+	if err != nil {
+		return SenluopanAuthStatus{}, err
+	}
+	settings = normalizeSettings(settings)
+	providers := settings.Private.Storage.Providers
+	if index < 0 || index >= len(providers) {
+		return SenluopanAuthStatus{}, errors.New("对象存储配置不存在")
+	}
+	provider := providers[index]
+	if providerInput != nil {
+		provider = normalizeStorageProvider(*providerInput)
+		saved := providers[index]
+		if strings.TrimSpace(provider.APIEmail) == "" {
+			provider.APIEmail = saved.APIEmail
+		}
+		if strings.TrimSpace(provider.APIPassword) == "" {
+			provider.APIPassword = saved.APIPassword
+		}
+		if strings.TrimSpace(provider.APIEndpoint) == strings.TrimSpace(saved.APIEndpoint) && strings.TrimSpace(provider.APIEmail) == strings.TrimSpace(saved.APIEmail) {
+			if strings.TrimSpace(provider.APIAccessToken) == "" {
+				provider.APIAccessToken = saved.APIAccessToken
+			}
+			if strings.TrimSpace(provider.APIRefreshToken) == "" {
+				provider.APIRefreshToken = saved.APIRefreshToken
+			}
+			if provider.APIAccessExpires <= 0 {
+				provider.APIAccessExpires = saved.APIAccessExpires
+			}
+			if provider.APIRefreshExpires <= 0 {
+				provider.APIRefreshExpires = saved.APIRefreshExpires
+			}
+		}
+	}
+	if provider.Type != model.StorageProviderTypeWebDAV {
+		return SenluopanAuthStatus{}, errors.New("仅 WebDAV 配置支持森络盘认证检查")
+	}
+	return CheckSenluopanProviderAuth(provider)
 }

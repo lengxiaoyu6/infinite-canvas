@@ -74,6 +74,7 @@ func New() *gin.Engine {
 		handler.DeleteUserWorkflow(c.Writer, c.Request, c.Param("id"))
 	})
 	v1.POST("/storage/measure", gin.WrapF(handler.MeasureUserStorageProvider))
+	v1.POST("/storage/senluopan-status", gin.WrapF(handler.CheckUserSenluopanAuth))
 	v1.POST("/files", gin.WrapF(handler.UploadFile))
 	v1.DELETE("/files/:id", func(c *gin.Context) {
 		handler.DeleteFile(c.Writer, c.Request, c.Param("id"))
@@ -127,6 +128,7 @@ func New() *gin.Engine {
 	admin.POST("/settings/channel-models", gin.WrapF(handler.AdminChannelModels))
 	admin.POST("/settings/channel-test", gin.WrapF(handler.AdminTestChannelModel))
 	admin.POST("/storage/measure", gin.WrapF(handler.AdminMeasureStorageProvider))
+	admin.POST("/storage/senluopan-status", gin.WrapF(handler.AdminCheckSenluopanAuth))
 	admin.GET("/prompt-categories", gin.WrapF(handler.AdminPromptCategories))
 	admin.POST("/prompt-categories/sync", gin.WrapF(handler.AdminSyncPromptCategories))
 	admin.POST("/prompt-categories/sync-all", gin.WrapF(handler.AdminSyncAllPromptCategories))

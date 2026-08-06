@@ -357,3 +357,18 @@ export type StorageCapacityResult = {
 export async function measureAdminStorageProvider(token: string, payload: { index: number; provider: AdminStorageProvider }) {
     return apiPost<StorageCapacityResult>("/api/admin/storage/measure", payload, token);
 }
+
+export type SenluopanAuthStatus = {
+    valid: boolean;
+    renewed: boolean;
+    persisted: boolean;
+    accessExpires: number;
+    refreshExpires: number;
+    totalBytes: number;
+    usedBytes: number;
+    checkedAt: string;
+};
+
+export async function checkAdminSenluopanAuth(token: string, payload: { index: number; provider: AdminStorageProvider }) {
+    return apiPost<SenluopanAuthStatus>("/api/admin/storage/senluopan-status", payload, token);
+}

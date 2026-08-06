@@ -228,10 +228,15 @@ func requestDeleteSenluopanDirectLink(provider model.StorageProvider, directLink
 }
 
 func ensureSenluopanProviderAuth(provider model.StorageProvider, force bool) (model.StorageProvider, error) {
+	authenticated, _, err := ensureSenluopanProviderAuthWithPersistence(provider, force)
+	return authenticated, err
+}
+
+func ensureSenluopanProviderAuthWithPersistence(provider model.StorageProvider, force bool) (model.StorageProvider, bool, error) {
 	senluopanAuthMu.Lock()
 	defer senluopanAuthMu.Unlock()
 	if !force && senluopanAccessTokenValid(provider) {
-		return provider, nil
+		return provider, false, nil
 	}
 	var refreshErr error
 	if strings.TrimSpace(provider.APIRefreshToken) != "" && senluopanRefreshTokenValid(provider) {
@@ -239,10 +244,11 @@ func ensureSenluopanProviderAuth(provider model.StorageProvider, force bool) (mo
 		if err == nil {
 			applySenluopanTokenFields(&provider, fields)
 			if strings.TrimSpace(provider.APIAccessToken) != "" {
-				if persistErr := persistSenluopanProvider(provider); persistErr != nil {
-					return provider, persistErr
+				persisted, persistErr := persistSenluopanProvider(provider)
+				if persistErr != nil {
+					return provider, false, persistErr
 				}
-				return provider, nil
+				return provider, persisted, nil
 			}
 			refreshErr = errors.New("森络盘刷新响应未返回 Access Token")
 		} else {
@@ -251,25 +257,26 @@ func ensureSenluopanProviderAuth(provider model.StorageProvider, force bool) (mo
 	}
 	if strings.TrimSpace(provider.APIEmail) == "" || strings.TrimSpace(provider.APIPassword) == "" {
 		if refreshErr != nil {
-			return provider, fmt.Errorf("森络盘令牌刷新失败且未配置账号密码: %w", refreshErr)
+			return provider, false, fmt.Errorf("森络盘令牌刷新失败且未配置账号密码: %w", refreshErr)
 		}
-		return provider, errors.New("森络盘 API 未配置账号邮箱和密码")
+		return provider, false, errors.New("森络盘 API 未配置账号邮箱和密码")
 	}
 	fields, err := requestSenluopanToken(provider, "/session/token", map[string]string{"email": strings.TrimSpace(provider.APIEmail), "password": provider.APIPassword})
 	if err != nil {
 		if refreshErr != nil {
-			return provider, fmt.Errorf("森络盘令牌刷新和登录均失败: %v; %w", refreshErr, err)
+			return provider, false, fmt.Errorf("森络盘令牌刷新和登录均失败: %v; %w", refreshErr, err)
 		}
-		return provider, err
+		return provider, false, err
 	}
 	applySenluopanTokenFields(&provider, fields)
 	if strings.TrimSpace(provider.APIAccessToken) == "" {
-		return provider, errors.New("森络盘认证响应未返回 Access Token")
+		return provider, false, errors.New("森络盘认证响应未返回 Access Token")
 	}
-	if persistErr := persistSenluopanProvider(provider); persistErr != nil {
-		return provider, persistErr
+	persisted, persistErr := persistSenluopanProvider(provider)
+	if persistErr != nil {
+		return provider, false, persistErr
 	}
-	return provider, nil
+	return provider, persisted, nil
 }
 
 func requestSenluopanToken(provider model.StorageProvider, route string, body map[string]string) (senluopanTokenFields, error) {
@@ -369,4 +376,106 @@ func unauthorizedStatus(err error) int {
 func isSenluopanUnauthorized(err error) bool {
 	var unauthorized senluopanUnauthorizedError
 	return errors.As(err, &unauthorized)
+}
+
+// SenluopanAuthStatus 森络盘认证状态和容量摘要。
+type SenluopanAuthStatus struct {
+	Valid          bool   `json:"valid"`
+	Renewed        bool   `json:"renewed"`
+	Persisted      bool   `json:"persisted"`
+	AccessExpires  int64  `json:"accessExpires"`
+	RefreshExpires int64  `json:"refreshExpires"`
+	TotalBytes     int64  `json:"totalBytes"`
+	UsedBytes      int64  `json:"usedBytes"`
+	CheckedAt      string `json:"checkedAt"`
+}
+
+type senluopanCapacityResponse struct {
+	Code int `json:"code"`
+	Data struct {
+		Total int64 `json:"total"`
+		Used  int64 `json:"used"`
+	} `json:"data"`
+	Msg string `json:"msg"`
+}
+
+// CheckSenluopanProviderAuth 检查森络盘 Access Token，并在失效时刷新或重新登录。
+func CheckSenluopanProviderAuth(provider model.StorageProvider) (SenluopanAuthStatus, error) {
+	if strings.TrimSpace(provider.APIEndpoint) == "" {
+		return SenluopanAuthStatus{}, errors.New("森络盘 API 地址不能为空")
+	}
+	if !senluopanProviderConfigured(provider) {
+		return SenluopanAuthStatus{}, errors.New("森络盘 API 配置不完整")
+	}
+	beforeAccess, beforeRefresh := provider.APIAccessToken, provider.APIRefreshToken
+	beforeAccessExpires, beforeRefreshExpires := provider.APIAccessExpires, provider.APIRefreshExpires
+	authenticated, persisted, err := ensureSenluopanProviderAuthWithPersistence(provider, false)
+	if err != nil {
+		return SenluopanAuthStatus{}, err
+	}
+	total, used, status, err := requestSenluopanCapacity(authenticated)
+	if status == http.StatusUnauthorized || status == http.StatusForbidden {
+		var refreshedPersisted bool
+		authenticated, refreshedPersisted, err = ensureSenluopanProviderAuthWithPersistence(authenticated, true)
+		persisted = persisted || refreshedPersisted
+		if err != nil {
+			return SenluopanAuthStatus{}, err
+		}
+		total, used, _, err = requestSenluopanCapacity(authenticated)
+	}
+	if err != nil {
+		return SenluopanAuthStatus{}, err
+	}
+	return SenluopanAuthStatus{
+		Valid:          true,
+		Renewed:        beforeAccess != authenticated.APIAccessToken || beforeRefresh != authenticated.APIRefreshToken || beforeAccessExpires != authenticated.APIAccessExpires || beforeRefreshExpires != authenticated.APIRefreshExpires,
+		Persisted:      persisted,
+		AccessExpires:  authenticated.APIAccessExpires,
+		RefreshExpires: authenticated.APIRefreshExpires,
+		TotalBytes:     total,
+		UsedBytes:      used,
+		CheckedAt:      now(),
+	}, nil
+}
+
+func requestSenluopanCapacity(provider model.StorageProvider) (int64, int64, int, error) {
+	endpoint := strings.TrimRight(strings.TrimSpace(provider.APIEndpoint), "/")
+	token := strings.TrimSpace(provider.APIAccessToken)
+	if endpoint == "" || token == "" {
+		return 0, 0, 0, errors.New("森络盘 API 配置不完整")
+	}
+	request, err := http.NewRequest(http.MethodGet, endpoint+"/user/capacity", nil)
+	if err != nil {
+		return 0, 0, 0, err
+	}
+	request.Header.Set("Authorization", "Bearer "+token)
+	response, err := SafeProxyHTTPClient().Do(request)
+	if err != nil {
+		return 0, 0, 0, err
+	}
+	defer response.Body.Close()
+	responseBody, err := io.ReadAll(io.LimitReader(response.Body, 64*1024))
+	if err != nil {
+		return 0, 0, 0, err
+	}
+	if response.StatusCode == http.StatusUnauthorized || response.StatusCode == http.StatusForbidden {
+		return 0, 0, response.StatusCode, senluopanUnauthorizedError{status: response.StatusCode}
+	}
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		return 0, 0, response.StatusCode, fmt.Errorf("森络盘认证检查失败: HTTP %d", response.StatusCode)
+	}
+	var payload senluopanCapacityResponse
+	if err := json.Unmarshal(responseBody, &payload); err != nil {
+		return 0, 0, response.StatusCode, fmt.Errorf("森络盘容量响应无效: %w", err)
+	}
+	if payload.Code != 0 {
+		if payload.Code == http.StatusUnauthorized || payload.Code == http.StatusForbidden {
+			return 0, 0, payload.Code, senluopanUnauthorizedError{status: payload.Code}
+		}
+		if strings.TrimSpace(payload.Msg) != "" {
+			return 0, 0, response.StatusCode, fmt.Errorf("森络盘认证检查失败: %s", strings.TrimSpace(payload.Msg))
+		}
+		return 0, 0, response.StatusCode, fmt.Errorf("森络盘认证检查失败: code=%d", payload.Code)
+	}
+	return payload.Data.Total, payload.Data.Used, response.StatusCode, nil
 }

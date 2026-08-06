@@ -203,3 +203,38 @@ func ProxyImage(w http.ResponseWriter, r *http.Request) {
 	}
 	_, _ = io.Copy(w, resp.Body)
 }
+
+// CheckUserSenluopanAuth 检查当前用户的森络盘认证状态。
+func CheckUserSenluopanAuth(w http.ResponseWriter, r *http.Request) {
+	var request struct {
+		Provider service.StorageObjectProviderInput `json:"provider"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+		Fail(w, "配置内容格式错误")
+		return
+	}
+	result, err := service.CheckUserSenluopanAuth(r.Context(), request.Provider)
+	if err != nil {
+		FailError(w, err)
+		return
+	}
+	OK(w, result)
+}
+
+// AdminCheckSenluopanAuth 检查管理员配置的森络盘认证状态。
+func AdminCheckSenluopanAuth(w http.ResponseWriter, r *http.Request) {
+	var request struct {
+		Index    int                    `json:"index"`
+		Provider *model.StorageProvider `json:"provider"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+		Fail(w, "配置内容格式错误")
+		return
+	}
+	result, err := service.CheckAdminSenluopanAuth(request.Index, request.Provider)
+	if err != nil {
+		FailError(w, err)
+		return
+	}
+	OK(w, result)
+}
