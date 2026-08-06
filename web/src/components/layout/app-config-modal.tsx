@@ -145,7 +145,7 @@ export function AppConfigModal() {
             }
             const providers = {
                 ...(config.syncStorageConfig || remoteStorageSyncEnabled ? { s3: config.syncStorageConfig ? userStorage : { ...userStorage, enabled: false, endpoint: "", bucket: "", accessKeyId: "", secretAccessKey: "" } } : {}),
-                ...(config.syncWebDAVStorageConfig || remoteWebDAVStorageSyncEnabled ? { webdav: config.syncWebDAVStorageConfig ? userWebDAVStorage : { ...userWebDAVStorage, enabled: false, endpoint: "", apiEndpoint: "", apiAccessToken: "", username: "", password: "" } } : {}),
+                ...(config.syncWebDAVStorageConfig || remoteWebDAVStorageSyncEnabled ? { webdav: config.syncWebDAVStorageConfig ? userWebDAVStorage : { ...userWebDAVStorage, enabled: false, endpoint: "", apiEndpoint: "", apiAccessToken: "", apiRefreshToken: "", apiEmail: "", apiPassword: "", apiAccessExpires: 0, apiRefreshExpires: 0, username: "", password: "" } } : {}),
             };
             if (token && canUseUserStorageProvider && Object.keys(providers).length) {
                 await syncUserStorageProvider(token, providers);
@@ -371,6 +371,8 @@ export function AppConfigModal() {
                                         <Input value={userWebDAVStorage.username} placeholder="用户名" onChange={(event) => setUserWebDAVStorage((value) => ({ ...value, username: event.target.value }))} />
                                         <Input.Password value={userWebDAVStorage.password} placeholder="密码 / 应用密码" onChange={(event) => setUserWebDAVStorage((value) => ({ ...value, password: event.target.value }))} />
                                         <Input value={userWebDAVStorage.apiEndpoint} placeholder="森络盘 API 地址，例如 https://www.senluopan.com/api/v4" onChange={(event) => setUserWebDAVStorage((value) => ({ ...value, apiEndpoint: event.target.value }))} />
+                                        <Input value={userWebDAVStorage.apiEmail} placeholder="森络盘账号邮箱" onChange={(event) => setUserWebDAVStorage((value) => ({ ...value, apiEmail: event.target.value }))} />
+                                        <Input.Password value={userWebDAVStorage.apiPassword} placeholder="森络盘账号密码" onChange={(event) => setUserWebDAVStorage((value) => ({ ...value, apiPassword: event.target.value }))} />
                                         <Input.Password value={userWebDAVStorage.apiAccessToken} placeholder="森络盘 Access Token" onChange={(event) => setUserWebDAVStorage((value) => ({ ...value, apiAccessToken: event.target.value }))} />
                                     </div>
                                 ) : null}

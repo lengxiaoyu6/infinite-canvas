@@ -127,6 +127,11 @@ type StorageProvider struct {
 	Endpoint          string `json:"endpoint"`
 	APIEndpoint       string `json:"apiEndpoint"`
 	APIAccessToken    string `json:"apiAccessToken"`
+	APIRefreshToken   string `json:"apiRefreshToken"`
+	APIEmail          string `json:"apiEmail"`
+	APIPassword       string `json:"apiPassword"`
+	APIAccessExpires  int64  `json:"apiAccessExpires"`
+	APIRefreshExpires int64  `json:"apiRefreshExpires"`
 	Region            string `json:"region"`
 	Bucket            string `json:"bucket"`
 	AccessKeyID       string `json:"accessKeyId"`

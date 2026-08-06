@@ -17,6 +17,10 @@ description: 当前版本已实现但仍需人工验证的变更项
 - [ ] 森络盘创建直链接口失败时，上传仍然成功并返回项目 `/api/files/:id/content` 地址。
 - [ ] 删除对象时，森络盘直链和 WebDAV 文件均被清理。
 - [ ] 重新登录或更换设备后，森络盘直链仍然能够读取图片。
+- [ ] 森络盘 Access Token 有效时请求复用原令牌，不重复登录。
+- [ ] Access Token 过期时使用 Refresh Token 获取新令牌，并保存新的 Access Token、Refresh Token 和过期时间。
+- [ ] Refresh Token 失效时使用森络盘账号邮箱和密码登录，保存新令牌；邮箱和密码与 WebDAV 用户名、密码分别生效。
+- [ ] 森络盘接口返回 401 或 403 时自动重新认证并重试一次；认证失败时上传仍保留 WebDAV 文件并回退项目文件接口。
 
 ## 个人 API Key 渠道
 

@@ -75,7 +75,7 @@ description: 当前后端主要数据表与字段说明
 | `created_at` | string | 创建时间 |
 | `updated_at` | string | 更新时间 |
 
-`storage_provider.s3` 保存 Endpoint、Region、Bucket、Access Key、Secret、公开域名和路径前缀；`storage_provider.webdav` 保存 WebDAV 地址、远程目录、用户名和密码/应用密码，以及可选的森络盘 API Endpoint 和 Access Token。管理员 WebDAV 存储配置支持相同的森络盘 API 字段。配置森络盘 API 后，上传对象会创建长期直链；缺少 API 配置时继续通过项目文件接口读取。自动同步开关不重复写入 Provider；后端下载和删除旧媒体时仍会读取已保存但已停用的 Provider。
+`storage_provider.s3` 保存 Endpoint、Region、Bucket、Access Key、Secret、公开域名和路径前缀；`storage_provider.webdav` 保存 WebDAV 地址、远程目录、用户名和密码/应用密码，以及可选的森络盘 API Endpoint、Access Token、Refresh Token、账号邮箱、账号密码和令牌过期时间。管理员 WebDAV 存储配置支持相同的森络盘 API 字段。配置森络盘 API 后，上传对象会创建长期直链；Access Token 过期时后端优先使用 Refresh Token 刷新，刷新令牌失效后使用账号邮箱和密码重新登录，并保存新令牌及过期时间。缺少 API 配置时继续通过项目文件接口读取。自动同步开关不重复写入 Provider；后端下载和删除旧媒体时仍会读取已保存但已停用的 Provider。
 
 ### storage_objects
 

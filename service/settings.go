@@ -255,6 +255,8 @@ func hidePrivateAPIKeys(settings model.Settings) model.Settings {
 		settings.Private.Storage.Providers[i].SecretAccessKey = ""
 		settings.Private.Storage.Providers[i].Password = ""
 		settings.Private.Storage.Providers[i].APIAccessToken = ""
+		settings.Private.Storage.Providers[i].APIRefreshToken = ""
+		settings.Private.Storage.Providers[i].APIPassword = ""
 	}
 	settings.Private.Auth.LinuxDo.ClientSecret = ""
 	return settings
@@ -770,6 +772,21 @@ func keepPrivateStorageSecrets(settings *model.Settings, saved model.Settings) {
 			if strings.TrimSpace(current.APIAccessToken) == "" {
 				current.APIAccessToken = provider.APIAccessToken
 			}
+			if strings.TrimSpace(current.APIRefreshToken) == "" {
+				current.APIRefreshToken = provider.APIRefreshToken
+			}
+			if strings.TrimSpace(current.APIPassword) == "" {
+				current.APIPassword = provider.APIPassword
+			}
+			if strings.TrimSpace(current.APIEmail) == "" {
+				current.APIEmail = provider.APIEmail
+			}
+			if current.APIAccessExpires == 0 {
+				current.APIAccessExpires = provider.APIAccessExpires
+			}
+			if current.APIRefreshExpires == 0 {
+				current.APIRefreshExpires = provider.APIRefreshExpires
+			}
 		}
 	}
 }
@@ -847,6 +864,9 @@ func normalizeStorageProvider(provider model.StorageProvider) model.StorageProvi
 	provider.Endpoint = strings.TrimRight(strings.TrimSpace(provider.Endpoint), "/")
 	provider.APIEndpoint = strings.TrimRight(strings.TrimSpace(provider.APIEndpoint), "/")
 	provider.APIAccessToken = strings.TrimSpace(provider.APIAccessToken)
+	provider.APIRefreshToken = strings.TrimSpace(provider.APIRefreshToken)
+	provider.APIEmail = strings.TrimSpace(provider.APIEmail)
+	provider.APIPassword = strings.TrimSpace(provider.APIPassword)
 	provider.Bucket = strings.TrimSpace(provider.Bucket)
 	provider.AccessKeyID = strings.TrimSpace(provider.AccessKeyID)
 	if provider.Type == model.StorageProviderTypeWebDAV {

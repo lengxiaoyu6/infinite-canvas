@@ -234,6 +234,11 @@ export type AdminStorageProvider = {
     endpoint: string;
     apiEndpoint: string;
     apiAccessToken: string;
+    apiRefreshToken: string;
+    apiEmail: string;
+    apiPassword: string;
+    apiAccessExpires: number;
+    apiRefreshExpires: number;
     region: string;
     bucket: string;
     accessKeyId: string;

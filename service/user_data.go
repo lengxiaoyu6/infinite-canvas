@@ -19,20 +19,25 @@ type UserConfigPayload struct {
 }
 
 type StorageObjectProviderInput struct {
-	Enabled         *bool  `json:"enabled,omitempty"`
-	Name            string `json:"name"`
-	Type            string `json:"type"`
-	Endpoint        string `json:"endpoint"`
-	APIEndpoint     string `json:"apiEndpoint"`
-	APIAccessToken  string `json:"apiAccessToken"`
-	Region          string `json:"region"`
-	Bucket          string `json:"bucket"`
-	AccessKeyID     string `json:"accessKeyId"`
-	SecretAccessKey string `json:"secretAccessKey"`
-	PublicBaseURL   string `json:"publicBaseUrl"`
-	PathPrefix      string `json:"pathPrefix"`
-	Username        string `json:"username"`
-	Password        string `json:"password"`
+	Enabled           *bool  `json:"enabled,omitempty"`
+	Name              string `json:"name"`
+	Type              string `json:"type"`
+	Endpoint          string `json:"endpoint"`
+	APIEndpoint       string `json:"apiEndpoint"`
+	APIAccessToken    string `json:"apiAccessToken"`
+	APIRefreshToken   string `json:"apiRefreshToken"`
+	APIEmail          string `json:"apiEmail"`
+	APIPassword       string `json:"apiPassword"`
+	APIAccessExpires  int64  `json:"apiAccessExpires"`
+	APIRefreshExpires int64  `json:"apiRefreshExpires"`
+	Region            string `json:"region"`
+	Bucket            string `json:"bucket"`
+	AccessKeyID       string `json:"accessKeyId"`
+	SecretAccessKey   string `json:"secretAccessKey"`
+	PublicBaseURL     string `json:"publicBaseUrl"`
+	PathPrefix        string `json:"pathPrefix"`
+	Username          string `json:"username"`
+	Password          string `json:"password"`
 }
 
 type UserStorageProviders struct {

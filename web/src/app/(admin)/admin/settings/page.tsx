@@ -45,7 +45,7 @@ const emptySettings: AdminSettings = {
     private: { channels: [], promptSync: { enabled: true, cron: "0 0 * * *" }, aiLog: { cleanup: { enabled: false, retentionDays: 14, cron: "0 3 * * *" } }, auth: { linuxDo: { clientId: "", clientSecret: "" } }, storage: { mode: "local_indexeddb", allowUserProvider: false, allowUserGlobalProvider: true, providers: [], roundRobinCursor: 0, capacityCheck: { enabled: false, cron: "0 */6 * * *" }, capacityLimitBytes: 9 * 1024 * 1024 * 1024 } },
 };
 const emptyChannel: AdminModelChannel = { id: "", protocol: "openai", name: "", baseUrl: "", apiKey: "", clearApiKey: false, models: [], weight: 1, timeout: 600, enabled: true, remark: "" };
-const emptyS3StorageProvider: AdminStorageProvider = { id: "", name: "", type: "s3", endpoint: "", apiEndpoint: "", apiAccessToken: "", region: "auto", bucket: "", accessKeyId: "", secretAccessKey: "", publicBaseUrl: "", pathPrefix: "canvas", username: "", password: "", weight: 1, enabled: true, ownerUserId: "", capacityBytes: 0, capacityCheckedAt: "", capacityExceeded: false };
+const emptyS3StorageProvider: AdminStorageProvider = { id: "", name: "", type: "s3", endpoint: "", apiEndpoint: "", apiAccessToken: "", apiRefreshToken: "", apiEmail: "", apiPassword: "", apiAccessExpires: 0, apiRefreshExpires: 0, region: "auto", bucket: "", accessKeyId: "", secretAccessKey: "", publicBaseUrl: "", pathPrefix: "canvas", username: "", password: "", weight: 1, enabled: true, ownerUserId: "", capacityBytes: 0, capacityCheckedAt: "", capacityExceeded: false };
 const emptyWebDAVStorageProvider: AdminStorageProvider = { ...emptyS3StorageProvider, name: "", type: "webdav", region: "" };
 
 type SettingsTabKey = "public" | "private";
@@ -745,6 +745,16 @@ export default function AdminSettingsPage() {
                                                                                 <Input placeholder="https://www.senluopan.com/api/v4" />
                                                                             </Form.Item>
                                                                         </Col>
+                                                                        <Col xs={24} md={6}>
+                                                                            <Form.Item name={[field.name, "apiEmail"]} label="森络盘账号邮箱">
+                                                                                <Input />
+                                                                            </Form.Item>
+                                                                        </Col>
+                                                                        <Col xs={24} md={6}>
+                                                                            <Form.Item name={[field.name, "apiPassword"]} label="森络盘账号密码">
+                                                                                <Input.Password placeholder="留空沿用已保存密码" />
+                                                                            </Form.Item>
+                                                                        </Col>
                                                                         <Col xs={24} md={12}>
                                                                             <Form.Item name={[field.name, "apiAccessToken"]} label="森络盘 Access Token">
                                                                                 <Input.Password placeholder="留空沿用已保存令牌" />
@@ -1194,6 +1204,8 @@ function normalizeStorageProvider(item: Partial<AdminStorageProvider> = {}): Adm
         capacityBytes: Number(item.capacityBytes) || 0,
         capacityCheckedAt: item.capacityCheckedAt || "",
         capacityExceeded: item.capacityExceeded === true,
+        apiAccessExpires: Number(item.apiAccessExpires) || 0,
+        apiRefreshExpires: Number(item.apiRefreshExpires) || 0,
     };
 }
 
