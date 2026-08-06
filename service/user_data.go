@@ -23,6 +23,8 @@ type StorageObjectProviderInput struct {
 	Name            string `json:"name"`
 	Type            string `json:"type"`
 	Endpoint        string `json:"endpoint"`
+	APIEndpoint     string `json:"apiEndpoint"`
+	APIAccessToken  string `json:"apiAccessToken"`
 	Region          string `json:"region"`
 	Bucket          string `json:"bucket"`
 	AccessKeyID     string `json:"accessKeyId"`

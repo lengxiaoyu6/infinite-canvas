@@ -45,7 +45,7 @@ const emptySettings: AdminSettings = {
     private: { channels: [], promptSync: { enabled: true, cron: "0 0 * * *" }, aiLog: { cleanup: { enabled: false, retentionDays: 14, cron: "0 3 * * *" } }, auth: { linuxDo: { clientId: "", clientSecret: "" } }, storage: { mode: "local_indexeddb", allowUserProvider: false, allowUserGlobalProvider: true, providers: [], roundRobinCursor: 0, capacityCheck: { enabled: false, cron: "0 */6 * * *" }, capacityLimitBytes: 9 * 1024 * 1024 * 1024 } },
 };
 const emptyChannel: AdminModelChannel = { id: "", protocol: "openai", name: "", baseUrl: "", apiKey: "", clearApiKey: false, models: [], weight: 1, timeout: 600, enabled: true, remark: "" };
-const emptyS3StorageProvider: AdminStorageProvider = { id: "", name: "", type: "s3", endpoint: "", region: "auto", bucket: "", accessKeyId: "", secretAccessKey: "", publicBaseUrl: "", pathPrefix: "canvas", username: "", password: "", weight: 1, enabled: true, ownerUserId: "", capacityBytes: 0, capacityCheckedAt: "", capacityExceeded: false };
+const emptyS3StorageProvider: AdminStorageProvider = { id: "", name: "", type: "s3", endpoint: "", apiEndpoint: "", apiAccessToken: "", region: "auto", bucket: "", accessKeyId: "", secretAccessKey: "", publicBaseUrl: "", pathPrefix: "canvas", username: "", password: "", weight: 1, enabled: true, ownerUserId: "", capacityBytes: 0, capacityCheckedAt: "", capacityExceeded: false };
 const emptyWebDAVStorageProvider: AdminStorageProvider = { ...emptyS3StorageProvider, name: "", type: "webdav", region: "" };
 
 type SettingsTabKey = "public" | "private";
@@ -740,7 +740,16 @@ export default function AdminSettingsPage() {
                                                                                 <Input.Password placeholder="留空沿用已保存密码" />
                                                                             </Form.Item>
                                                                         </Col>
-                                                                        <Col xs={0} md={6} />
+                                                                        <Col xs={24} md={12}>
+                                                                            <Form.Item name={[field.name, "apiEndpoint"]} label="森络盘 API 地址">
+                                                                                <Input placeholder="https://www.senluopan.com/api/v4" />
+                                                                            </Form.Item>
+                                                                        </Col>
+                                                                        <Col xs={24} md={12}>
+                                                                            <Form.Item name={[field.name, "apiAccessToken"]} label="森络盘 Access Token">
+                                                                                <Input.Password placeholder="留空沿用已保存令牌" />
+                                                                            </Form.Item>
+                                                                        </Col>
                                                                     </>
                                                                 ) : (
                                                                     <>

@@ -75,7 +75,7 @@ description: 当前后端主要数据表与字段说明
 | `created_at` | string | 创建时间 |
 | `updated_at` | string | 更新时间 |
 
-`storage_provider.s3` 保存 Endpoint、Region、Bucket、Access Key、Secret、公开域名和路径前缀；`storage_provider.webdav` 保存 WebDAV 地址、远程目录、用户名和密码/应用密码。自动同步开关不重复写入 Provider；后端下载和删除旧媒体时仍会读取已保存但已停用的 Provider。
+`storage_provider.s3` 保存 Endpoint、Region、Bucket、Access Key、Secret、公开域名和路径前缀；`storage_provider.webdav` 保存 WebDAV 地址、远程目录、用户名和密码/应用密码，以及可选的森络盘 API Endpoint 和 Access Token。管理员 WebDAV 存储配置支持相同的森络盘 API 字段。配置森络盘 API 后，上传对象会创建长期直链；缺少 API 配置时继续通过项目文件接口读取。自动同步开关不重复写入 Provider；后端下载和删除旧媒体时仍会读取已保存但已停用的 Provider。
 
 ### storage_objects
 
@@ -87,7 +87,8 @@ S3/R2 与 WebDAV 共用的媒体文件索引表，不保存画布、素材列表
 | `provider_id` | string | 创建文件时使用的 S3/R2 或 WebDAV Provider ID |
 | `bucket` | string | S3/R2 Bucket；WebDAV 为空 |
 | `object_key` | string | Provider 内相对对象路径，唯一索引 |
-| `public_url` | string | S3/R2 可选公开地址；WebDAV 为空并通过 `/api/files/:id/content` 读取 |
+| `public_url` | string | S3/R2 公开地址或森络盘长期直链；未配置森络盘 API 时 WebDAV 为空并通过 `/api/files/:id/content` 读取 |
+| `direct_link_id` | string | 森络盘直链 ID，用于删除对象时清理直链 |
 | `mime_type` | string | 媒体 MIME 类型 |
 | `bytes` | number | 文件字节数 |
 | `width` | number | 预留字段，当前上传链路未写入，默认 `0` |

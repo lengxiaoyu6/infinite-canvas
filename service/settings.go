@@ -254,6 +254,7 @@ func hidePrivateAPIKeys(settings model.Settings) model.Settings {
 	for i := range settings.Private.Storage.Providers {
 		settings.Private.Storage.Providers[i].SecretAccessKey = ""
 		settings.Private.Storage.Providers[i].Password = ""
+		settings.Private.Storage.Providers[i].APIAccessToken = ""
 	}
 	settings.Private.Auth.LinuxDo.ClientSecret = ""
 	return settings
@@ -759,15 +760,15 @@ func (err safeMessageError) SafeMessage() string {
 func keepPrivateStorageSecrets(settings *model.Settings, saved model.Settings) {
 	for i := range settings.Private.Storage.Providers {
 		current := &settings.Private.Storage.Providers[i]
-		if strings.TrimSpace(current.SecretAccessKey) != "" && strings.TrimSpace(current.Password) != "" {
-			continue
-		}
 		if provider, ok := findSavedStorageProvider(*current, saved.Private.Storage.Providers, i); ok {
 			if strings.TrimSpace(current.SecretAccessKey) == "" {
 				current.SecretAccessKey = provider.SecretAccessKey
 			}
 			if strings.TrimSpace(current.Password) == "" {
 				current.Password = provider.Password
+			}
+			if strings.TrimSpace(current.APIAccessToken) == "" {
+				current.APIAccessToken = provider.APIAccessToken
 			}
 		}
 	}
@@ -844,6 +845,8 @@ func normalizeStorageProvider(provider model.StorageProvider) model.StorageProvi
 		provider.Type = model.StorageProviderTypeS3
 	}
 	provider.Endpoint = strings.TrimRight(strings.TrimSpace(provider.Endpoint), "/")
+	provider.APIEndpoint = strings.TrimRight(strings.TrimSpace(provider.APIEndpoint), "/")
+	provider.APIAccessToken = strings.TrimSpace(provider.APIAccessToken)
 	provider.Bucket = strings.TrimSpace(provider.Bucket)
 	provider.AccessKeyID = strings.TrimSpace(provider.AccessKeyID)
 	if provider.Type == model.StorageProviderTypeWebDAV {

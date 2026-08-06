@@ -245,8 +245,18 @@ func UploadStorageObjectWithProvider(ctx context.Context, filename string, conte
 		return UploadedStorageObject{}, err
 	}
 	publicURL := objectURL(provider, objectKey)
+	directLinkID := ""
+	if provider.Type == model.StorageProviderTypeWebDAV && provider.APIEndpoint != "" && provider.APIAccessToken != "" {
+		link, linkID, linkErr := createSenluopanDirectLink(provider, objectKey)
+		if linkErr != nil {
+			log.Printf("senluopan direct link create failed provider=%s object=%s err=%v", provider.Name, objectKey, linkErr)
+		} else {
+			publicURL = link
+			directLinkID = linkID
+		}
+	}
 	object := model.StorageObject{
-		ID: objectID, ProviderID: provider.ID, Bucket: provider.Bucket, ObjectKey: objectKey, PublicURL: publicURL,
+		ID: objectID, ProviderID: provider.ID, Bucket: provider.Bucket, ObjectKey: objectKey, PublicURL: publicURL, DirectLinkID: directLinkID,
 		MimeType: contentType, Bytes: int64(len(data)), SHA256: hex.EncodeToString(sum[:]), CreatedBy: userID, CreatedAt: now(),
 	}
 	if _, err := repository.SaveStorageObject(object); err != nil {
@@ -289,6 +299,11 @@ func DeleteStorageObject(ctx context.Context, id string, providerInput *StorageO
 	if !ok {
 		return errors.New("对象存储配置不存在")
 	}
+	if provider.Type == model.StorageProviderTypeWebDAV && object.DirectLinkID != "" {
+		if err := deleteSenluopanDirectLink(provider, object.DirectLinkID); err != nil {
+			log.Printf("senluopan direct link delete failed provider=%s object=%s err=%v", provider.Name, object.ObjectKey, err)
+		}
+	}
 	if err := deleteStorageObjectData(provider, object.ObjectKey); err != nil {
 		return err
 	}
@@ -322,11 +337,15 @@ func MeasureAdminStorageProvider(index int, providerInput *model.StorageProvider
 		provider = normalizeStorageProvider(*providerInput)
 		provider.SecretAccessKey = storage.Providers[index].SecretAccessKey
 		provider.Password = storage.Providers[index].Password
+		provider.APIAccessToken = storage.Providers[index].APIAccessToken
 		if strings.TrimSpace(providerInput.SecretAccessKey) != "" {
 			provider.SecretAccessKey = providerInput.SecretAccessKey
 		}
 		if strings.TrimSpace(providerInput.Password) != "" {
 			provider.Password = providerInput.Password
+		}
+		if strings.TrimSpace(providerInput.APIAccessToken) != "" {
+			provider.APIAccessToken = providerInput.APIAccessToken
 		}
 	}
 	bytes, err := measureStorageProvider(provider)
@@ -727,6 +746,8 @@ func normalizeUserStorageProviderForOwner(input StorageObjectProviderInput, owne
 		Name:            input.Name,
 		Type:            input.Type,
 		Endpoint:        input.Endpoint,
+		APIEndpoint:     input.APIEndpoint,
+		APIAccessToken:  input.APIAccessToken,
 		Region:          input.Region,
 		Bucket:          input.Bucket,
 		AccessKeyID:     input.AccessKeyID,

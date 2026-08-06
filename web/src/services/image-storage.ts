@@ -34,6 +34,8 @@ export type UserS3StorageProvider = UserStorageProviderBase & {
 
 export type UserWebDAVStorageProvider = UserStorageProviderBase & {
     type: "webdav";
+    apiEndpoint: string;
+    apiAccessToken: string;
     pathPrefix: string;
     username: string;
     password: string;
@@ -342,6 +344,8 @@ export function defaultUserWebDAVStorageProvider(): UserWebDAVStorageProvider {
         name: "我的 WebDAV",
         type: "webdav",
         endpoint: "",
+        apiEndpoint: "",
+        apiAccessToken: "",
         pathPrefix: "canvas",
         username: "",
         password: "",
@@ -400,6 +404,8 @@ export function toProviderPayload(provider: UserStorageProvider) {
             name: provider.name,
             type: "webdav" as const,
             endpoint: provider.endpoint,
+            apiEndpoint: provider.apiEndpoint,
+            apiAccessToken: provider.apiAccessToken,
             pathPrefix: provider.pathPrefix,
             username: provider.username,
             password: provider.password,
