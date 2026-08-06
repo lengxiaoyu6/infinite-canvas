@@ -63,7 +63,7 @@ export function AppConfigModal() {
     const canUseRemoteChannel = isLoggedIn && (user?.role === "admin" || modelChannel?.allowUserRemoteChannel === true);
     const allowCustomChannel = modelChannel?.allowCustomChannel === true;
     const effectiveMode = canUseRemoteChannel && allowCustomChannel ? config.channelMode : canUseRemoteChannel ? "remote" : "local";
-    const hasSenluopanConfig = Boolean(userWebDAVStorage.apiEndpoint.trim());
+    const hasSenluopanConfig = Boolean((userWebDAVStorage.apiEndpoint || "").trim());
     const modelConfig = effectiveConfig;
     const selectedChannelIds = new Set(modelGroups.map((group) => modelConfig[group.channelKey]).filter(Boolean));
     const selectedPersonalChannels = effectiveMode === "local" ? modelConfig.publicChannels.filter((channel) => selectedChannelIds.has(channel.id)) : [];

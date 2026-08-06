@@ -704,9 +704,9 @@ export default function AdminSettingsPage() {
                                                     新增 WebDAV 配置
                                                 </Button>
                                                 {fields.map((field) => {
-                                                    const provider = storageProviders[field.name] || emptyS3StorageProvider;
+                                                    const provider = normalizeStorageProvider(storageProviders[field.name] || emptyS3StorageProvider);
                                                     const isWebDAV = provider.type === "webdav";
-                                                    const hasSenluopanConfig = isWebDAV && Boolean(provider.apiEndpoint.trim());
+                                                    const hasSenluopanConfig = isWebDAV && Boolean((provider.apiEndpoint || "").trim());
                                                     const blockedByOtherType = storageProviders.some((item: AdminStorageProvider, index: number) => index !== field.name && item.enabled && item.type !== provider.type);
                                                     const weightField = (
                                                         <Col xs={24} md={3}>
@@ -1247,8 +1247,23 @@ function normalizeStorageProvider(item: Partial<AdminStorageProvider> = {}): Adm
         ...(type === "webdav" ? emptyWebDAVStorageProvider : emptyS3StorageProvider),
         ...item,
         id: item.id || "",
+        name: item.name || "",
         type,
+        endpoint: item.endpoint || "",
+        apiEndpoint: item.apiEndpoint || "",
+        apiAccessToken: item.apiAccessToken || "",
+        apiRefreshToken: item.apiRefreshToken || "",
+        apiEmail: item.apiEmail || "",
+        apiPassword: item.apiPassword || "",
         region: type === "s3" ? item.region || "auto" : "",
+        bucket: item.bucket || "",
+        accessKeyId: item.accessKeyId || "",
+        secretAccessKey: item.secretAccessKey || "",
+        publicBaseUrl: item.publicBaseUrl || "",
+        pathPrefix: item.pathPrefix ?? "canvas",
+        username: item.username || "",
+        password: item.password || "",
+        ownerUserId: item.ownerUserId || "",
         weight: Math.max(1, Number(item.weight) || 1),
         enabled: item.enabled !== false,
         capacityBytes: Number(item.capacityBytes) || 0,
