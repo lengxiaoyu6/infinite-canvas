@@ -33,7 +33,12 @@ func createSenluopanDirectLink(provider model.StorageProvider, objectKey string)
 	if endpoint == "" || token == "" {
 		return "", "", errors.New("森络盘 API 配置不完整")
 	}
-	fileURI := url.URL{Scheme: "cloudreve", Host: "my", Path: "/" + strings.TrimLeft(objectKey, "/")}.String()
+	fileURL := url.URL{
+		Scheme: "cloudreve",
+		Host:   "my",
+		Path:   "/" + strings.TrimLeft(objectKey, "/"),
+	}
+	fileURI := fileURL.String()
 	body, err := json.Marshal(map[string][]string{"uris": {fileURI}})
 	if err != nil {
 		return "", "", err
