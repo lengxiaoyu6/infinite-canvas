@@ -30,7 +30,11 @@ export async function fetchUserConfig(token: string) {
 }
 
 export async function syncUserModelConfig(token: string, config: AiConfig) {
-    return apiPost<UserConfigPayload>("/api/v1/user-config/model", { config }, token);
+    const accountConfig: Partial<AiConfig> = { ...config };
+    delete accountConfig.baseUrl;
+    delete accountConfig.apiKey;
+    delete accountConfig.publicChannels;
+    return apiPost<UserConfigPayload>("/api/v1/user-config/model", { config: accountConfig }, token);
 }
 
 export type UserStorageProviders = {
@@ -107,8 +111,6 @@ export async function draftUserWorkflow<T>(
         model?: string;
         channelId?: string;
         channelMode?: "remote" | "local";
-        baseUrl?: string;
-        apiKey?: string;
         references?: string[];
     },
 ) {

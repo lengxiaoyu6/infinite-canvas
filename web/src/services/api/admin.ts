@@ -163,10 +163,11 @@ export async function deleteAdminAsset(token: string, id: string) {
 
 export type AdminModelChannel = {
     id: string;
-    protocol: "openai" | "kie";
+    protocol: "openai" | "kie" | "apimart";
     name: string;
     baseUrl: string;
     apiKey: string;
+    clearApiKey: boolean;
     models: string[];
     weight: number;
     timeout: number;
@@ -201,6 +202,7 @@ export type AdminModelCost = {
 
 export type AdminPublicModelChannelInfo = {
     id: string;
+    protocol: "openai" | "kie" | "apimart";
     name: string;
     baseUrl: string;
     models: string[];
@@ -208,6 +210,7 @@ export type AdminPublicModelChannelInfo = {
     timeout: number;
     enabled: boolean;
     remark: string;
+    hasSystemApiKey: boolean;
 };
 
 export type AdminPublicSettings = {
@@ -252,7 +255,6 @@ export type AdminPrivateSettings = {
         cron: string;
     };
     aiLog: {
-        localDirectReportEnabled: boolean;
         cleanup: {
             enabled: boolean;
             retentionDays: number;

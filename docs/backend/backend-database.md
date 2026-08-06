@@ -68,7 +68,7 @@ description: 当前后端主要数据表与字段说明
 | 字段 | 类型 | 说明 |
 | --- | --- | --- |
 | `user_id` | string | 用户 ID，主键 |
-| `model_config` | text | 模型与偏好配置 JSON；S3/R2 和 WebDAV 的自动同步开关分别为 `syncStorageConfig`、`syncWebDAVStorageConfig` |
+| `model_config` | text | 模型与偏好配置 JSON；包含登录账号选择的模型、个人渠道 ID 与 API Key，支持跨浏览器恢复；S3/R2 和 WebDAV 的自动同步开关分别为 `syncStorageConfig`、`syncWebDAVStorageConfig` |
 | `storage_provider` | text | 用户存储配置 JSON，内部结构为 `{ "s3": {...}, "webdav": {...} }`，两类配置可保留但不能同时启用 |
 | `image_history` | text | 用户图片历史同步数据 |
 | `asset_data` | text | 用户素材同步数据 |
@@ -307,7 +307,9 @@ S3/R2 与 WebDAV 共用的媒体文件索引表，不保存画布、素材列表
 | `defaultVideoModel` | string | 默认视频模型 |
 | `defaultTextModel` | string | 默认文本模型 |
 | `systemPrompt` | string | 系统提示词 |
-| `allowCustomChannel` | bool | 是否允许用户自定义渠道，默认允许，关闭后前端只提供走后端渠道的模式 |
+| `channels` | object[] | 公开渠道信息，由后端根据已启用私有渠道生成，不含系统 API Key |
+| `allowCustomChannel` | bool | 是否允许用户使用个人 API Key 渠道，默认允许 |
+| `allowUserRemoteChannel` | bool | 是否允许普通用户使用系统 API Key 的云端渠道，默认关闭 |
 
 `modelCosts` 每项字段：
 

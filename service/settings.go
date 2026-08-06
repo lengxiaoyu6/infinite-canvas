@@ -23,10 +23,10 @@ var adminModelHTTPClient = &http.Client{Timeout: 30 * time.Second}
 func PublicSettings() (model.PublicSetting, error) {
 	settings, err := repository.GetSettings()
 	settings = normalizeSettings(settings)
-	settings.Public.ModelChannel.Channels = publicChannelInfos(settings.Private.Channels)
 	if len(settings.Public.ModelChannel.AvailableModels) == 0 {
 		settings.Public.ModelChannel.AvailableModels = enabledChannelModels(settings.Private.Channels)
 	}
+	settings.Public.ModelChannel.Channels = publicChannelInfos(settings.Private.Channels, settings.Public.ModelChannel.AvailableModels)
 	return settings.Public, err
 }
 
@@ -36,6 +36,19 @@ func UserCanUseRemoteModelChannel(user model.AuthUser) bool {
 	}
 	settings, err := PublicSettings()
 	return err == nil && settings.ModelChannel.AllowUserRemoteChannel != nil && *settings.ModelChannel.AllowUserRemoteChannel
+}
+
+func PublicModelAvailable(modelName string) (bool, error) {
+	settings, err := repository.GetSettings()
+	if err != nil {
+		return false, err
+	}
+	settings = normalizeSettings(settings)
+	availableModels := settings.Public.ModelChannel.AvailableModels
+	if len(availableModels) == 0 {
+		availableModels = enabledChannelModels(settings.Private.Channels)
+	}
+	return modelListHasModel(availableModels, strings.TrimSpace(modelName)), nil
 }
 
 func AdminSettings() (model.Settings, error) {
@@ -236,6 +249,7 @@ func normalizePrivateSetting(setting model.PrivateSetting) model.PrivateSetting 
 func hidePrivateAPIKeys(settings model.Settings) model.Settings {
 	for i := range settings.Private.Channels {
 		settings.Private.Channels[i].APIKey = ""
+		settings.Private.Channels[i].ClearAPIKey = false
 	}
 	for i := range settings.Private.Storage.Providers {
 		settings.Private.Storage.Providers[i].SecretAccessKey = ""
@@ -247,6 +261,12 @@ func hidePrivateAPIKeys(settings model.Settings) model.Settings {
 
 func keepPrivateAPIKeys(settings *model.Settings, saved model.Settings) {
 	for i := range settings.Private.Channels {
+		if settings.Private.Channels[i].ClearAPIKey {
+			settings.Private.Channels[i].APIKey = ""
+			settings.Private.Channels[i].ClearAPIKey = false
+			continue
+		}
+		settings.Private.Channels[i].ClearAPIKey = false
 		if strings.TrimSpace(settings.Private.Channels[i].APIKey) != "" {
 			continue
 		}
@@ -878,21 +898,27 @@ func modelChannelsForModel(channels []model.ModelChannel, modelName string) []mo
 	return result
 }
 
-func publicChannelInfos(channels []model.ModelChannel) []model.PublicModelChannelInfo {
+func publicChannelInfos(channels []model.ModelChannel, availableModels []string) []model.PublicModelChannelInfo {
 	result := []model.PublicModelChannelInfo{}
 	for _, channel := range channels {
 		if !channel.Enabled || channel.BaseURL == "" || len(channel.Models) == 0 {
 			continue
 		}
+		channelModels := filterEnabledModels(channel.Models, availableModels)
+		if len(channelModels) == 0 {
+			continue
+		}
 		result = append(result, model.PublicModelChannelInfo{
-			ID:      channel.ID,
-			Name:    channel.Name,
-			BaseURL: channel.BaseURL,
-			Models:  append([]string{}, channel.Models...),
-			Weight:  channel.Weight,
-			Timeout: channel.Timeout,
-			Enabled: channel.Enabled,
-			Remark:  channel.Remark,
+			ID:              channel.ID,
+			Protocol:        channel.Protocol,
+			Name:            channel.Name,
+			BaseURL:         channel.BaseURL,
+			Models:          channelModels,
+			Weight:          channel.Weight,
+			Timeout:         channel.Timeout,
+			Enabled:         channel.Enabled,
+			Remark:          channel.Remark,
+			HasSystemAPIKey: strings.TrimSpace(channel.APIKey) != "",
 		})
 	}
 	return result

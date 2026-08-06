@@ -39,15 +39,24 @@ type UserStorageProviders struct {
 }
 
 type userModelConfigInput struct {
-	LocalChannels []userLocalModelChannelInput `json:"localChannels"`
+	Model           string                       `json:"model"`
+	ImageModel      string                       `json:"imageModel"`
+	VideoModel      string                       `json:"videoModel"`
+	TextModel       string                       `json:"textModel"`
+	AudioModel      string                       `json:"audioModel"`
+	ActiveChannelID string                       `json:"activeChannelId"`
+	ImageChannelID  string                       `json:"imageChannelId"`
+	VideoChannelID  string                       `json:"videoChannelId"`
+	TextChannelID   string                       `json:"textChannelId"`
+	AudioChannelID  string                       `json:"audioChannelId"`
+	LocalChannels   []userLocalModelChannelInput `json:"localChannels"`
 }
 
 type userLocalModelChannelInput struct {
-	ID      string   `json:"id"`
-	Name    string   `json:"name"`
-	BaseURL string   `json:"baseUrl"`
-	APIKey  string   `json:"apiKey"`
-	Models  []string `json:"models"`
+	ID              string   `json:"id"`
+	SystemChannelID string   `json:"systemChannelId"`
+	APIKey          string   `json:"apiKey"`
+	Models          []string `json:"models"`
 }
 
 func SelectUserLocalModelChannelForModel(userID string, modelName string, channelID string) (model.ModelChannel, error) {
@@ -68,37 +77,56 @@ func SelectUserLocalModelChannelForModel(userID string, modelName string, channe
 		return model.ModelChannel{}, err
 	}
 	if !ok || strings.TrimSpace(config.ModelConfig) == "" {
-		return model.ModelChannel{}, errors.New("本地渠道不存在")
+		return model.ModelChannel{}, errors.New("个人密钥渠道不存在")
 	}
 	var modelConfig userModelConfigInput
 	if err := json.Unmarshal([]byte(config.ModelConfig), &modelConfig); err != nil {
 		return model.ModelChannel{}, err
 	}
+	settings, err := repository.GetSettings()
+	if err != nil {
+		return model.ModelChannel{}, err
+	}
+	settings = normalizeSettings(settings)
+	if settings.Public.ModelChannel.AllowCustomChannel == nil || !*settings.Public.ModelChannel.AllowCustomChannel {
+		return model.ModelChannel{}, errors.New("个人密钥渠道未开放")
+	}
+	availableModels := settings.Public.ModelChannel.AvailableModels
+	if len(availableModels) == 0 {
+		availableModels = enabledChannelModels(settings.Private.Channels)
+	}
+	if !modelListHasModel(availableModels, modelName) {
+		return model.ModelChannel{}, errors.New("个人密钥渠道未开放该模型")
+	}
 	for _, channel := range modelConfig.LocalChannels {
-		if strings.TrimSpace(channel.ID) != channelID {
+		systemChannelID := strings.TrimSpace(channel.SystemChannelID)
+		if systemChannelID == "" {
+			systemChannelID = strings.TrimSpace(channel.ID)
+		}
+		if systemChannelID != channelID {
 			continue
 		}
-		baseURL := strings.TrimSpace(channel.BaseURL)
+		var systemChannel model.ModelChannel
+		for _, item := range settings.Private.Channels {
+			if strings.TrimSpace(item.ID) == systemChannelID {
+				systemChannel = item
+				break
+			}
+		}
+		if systemChannel.ID == "" || !systemChannel.Enabled || strings.TrimSpace(systemChannel.BaseURL) == "" {
+			return model.ModelChannel{}, errors.New("个人密钥渠道不可用")
+		}
+		if !modelListHasModel(systemChannel.Models, modelName) {
+			return model.ModelChannel{}, errors.New("个人密钥渠道不支持该模型")
+		}
 		apiKey := strings.TrimSpace(channel.APIKey)
-		if baseURL == "" || apiKey == "" {
-			return model.ModelChannel{}, errors.New("本地渠道配置不完整")
+		if apiKey == "" {
+			return model.ModelChannel{}, errors.New("个人密钥渠道未填写 API Key")
 		}
-		models := userLocalChannelModels(channel.Models)
-		if len(models) > 0 && !userLocalChannelHasModel(models, modelName) {
-			return model.ModelChannel{}, errors.New("本地渠道不支持该模型")
-		}
-		return model.ModelChannel{
-			ID:      channelID,
-			Name:    firstVideoTaskValue(strings.TrimSpace(channel.Name), "本地直连"),
-			BaseURL: baseURL,
-			APIKey:  apiKey,
-			Models:  models,
-			Weight:  1,
-			Timeout: 600,
-			Enabled: true,
-		}, nil
+		systemChannel.APIKey = apiKey
+		return systemChannel, nil
 	}
-	return model.ModelChannel{}, errors.New("本地渠道不存在")
+	return model.ModelChannel{}, errors.New("个人密钥渠道不存在")
 }
 
 func userLocalChannelModels(models []string) []string {
@@ -115,7 +143,7 @@ func userLocalChannelModels(models []string) []string {
 	return result
 }
 
-func userLocalChannelHasModel(models []string, modelName string) bool {
+func modelListHasModel(models []string, modelName string) bool {
 	for _, item := range models {
 		if strings.EqualFold(strings.TrimSpace(item), modelName) {
 			return true
@@ -194,12 +222,109 @@ func SaveCurrentUserModelConfig(ctx context.Context, raw json.RawMessage) (UserC
 		config.UserID = user.ID
 		config.CreatedAt = current
 	}
-	config.ModelConfig = string(raw)
+	cleaned, err := sanitizeUserModelConfig(raw)
+	if err != nil {
+		return UserConfigPayload{}, err
+	}
+	config.ModelConfig = string(cleaned)
 	config.UpdatedAt = current
 	if _, err := repository.SaveUserConfig(config); err != nil {
 		return UserConfigPayload{}, err
 	}
 	return CurrentUserConfig(ctx)
+}
+
+func sanitizeUserModelConfig(raw json.RawMessage) (json.RawMessage, error) {
+	var payload map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		return nil, err
+	}
+	var input userModelConfigInput
+	if err := json.Unmarshal(raw, &input); err != nil {
+		return nil, err
+	}
+	settings, err := repository.GetSettings()
+	if err != nil {
+		return nil, err
+	}
+	settings = normalizeSettings(settings)
+	channels := settings.Private.Channels
+	allowPersonalChannel := settings.Public.ModelChannel.AllowCustomChannel != nil && *settings.Public.ModelChannel.AllowCustomChannel
+	availableModels := settings.Public.ModelChannel.AvailableModels
+	if len(availableModels) == 0 {
+		availableModels = enabledChannelModels(channels)
+	}
+	channelByID := make(map[string]model.ModelChannel, len(channels))
+	for _, channel := range channels {
+		if channel.Enabled && strings.TrimSpace(channel.BaseURL) != "" {
+			channel.Models = filterEnabledModels(channel.Models, availableModels)
+			if len(channel.Models) > 0 {
+				channelByID[channel.ID] = channel
+			}
+		}
+	}
+	localChannels := make([]userLocalModelChannelInput, 0, len(input.LocalChannels))
+	seen := map[string]bool{}
+	for _, item := range input.LocalChannels {
+		systemChannelID := strings.TrimSpace(item.SystemChannelID)
+		if systemChannelID == "" {
+			systemChannelID = strings.TrimSpace(item.ID)
+		}
+		channel, ok := channelByID[systemChannelID]
+		if !allowPersonalChannel || !ok || seen[systemChannelID] {
+			continue
+		}
+		localChannels = append(localChannels, userLocalModelChannelInput{
+			ID:              systemChannelID,
+			SystemChannelID: systemChannelID,
+			APIKey:          strings.TrimSpace(item.APIKey),
+			Models:          userLocalChannelModels(channel.Models),
+		})
+		seen[systemChannelID] = true
+	}
+	encodedChannels, err := json.Marshal(localChannels)
+	if err != nil {
+		return nil, err
+	}
+	payload["localChannels"] = encodedChannels
+	sanitizeUserModelSelection(payload, "model", "activeChannelId", input.Model, input.ActiveChannelID, channelByID)
+	sanitizeUserModelSelection(payload, "imageModel", "imageChannelId", input.ImageModel, input.ImageChannelID, channelByID)
+	sanitizeUserModelSelection(payload, "videoModel", "videoChannelId", input.VideoModel, input.VideoChannelID, channelByID)
+	sanitizeUserModelSelection(payload, "textModel", "textChannelId", input.TextModel, input.TextChannelID, channelByID)
+	sanitizeUserModelSelection(payload, "audioModel", "audioChannelId", input.AudioModel, input.AudioChannelID, channelByID)
+	delete(payload, "baseUrl")
+	delete(payload, "apiKey")
+	delete(payload, "publicChannels")
+	delete(payload, "models")
+	delete(payload, "imageModels")
+	delete(payload, "videoModels")
+	delete(payload, "textModels")
+	delete(payload, "audioModels")
+	return json.Marshal(payload)
+}
+
+func sanitizeUserModelSelection(payload map[string]json.RawMessage, modelKey string, channelKey string, modelName string, channelID string, channels map[string]model.ModelChannel) {
+	modelName = strings.TrimSpace(modelName)
+	channelID = strings.TrimSpace(channelID)
+	modelAvailable := false
+	for _, channel := range channels {
+		if modelListHasModel(channel.Models, modelName) {
+			modelAvailable = true
+			break
+		}
+	}
+	if !modelAvailable {
+		delete(payload, modelKey)
+		delete(payload, channelKey)
+		return
+	}
+	payload[modelKey], _ = json.Marshal(modelName)
+	channel, ok := channels[channelID]
+	if !ok || !modelListHasModel(channel.Models, modelName) {
+		delete(payload, channelKey)
+		return
+	}
+	payload[channelKey], _ = json.Marshal(channelID)
 }
 
 func CurrentUserImageHistory(ctx context.Context) (json.RawMessage, error) {

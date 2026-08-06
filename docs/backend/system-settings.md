@@ -24,9 +24,11 @@ description: settings 表中 public 和 private 配置结构说明
     ],
     "defaultModel": "gpt-image-2",
     "defaultImageModel": "gpt-image-2",
+    "defaultVideoModel": "",
     "defaultTextModel": "gpt-5.5",
     "systemPrompt": "",
-    "allowCustomChannel": true
+    "allowCustomChannel": true,
+    "allowUserRemoteChannel": false
   },
   "auth": {
     "allowRegister": true,
@@ -53,7 +55,9 @@ description: settings 表中 public 和 private 配置结构说明
 | `defaultVideoModel` | string | 默认视频模型，从 `availableModels` 中选择；为空或失效时优先选择 `seedance`、`video` 模型 |
 | `defaultTextModel` | string | 默认文本模型，从 `availableModels` 中选择；为空或失效时优先选择非图片/视频模型 |
 | `systemPrompt` | string | 系统提示词 |
-| `allowCustomChannel` | boolean | 是否允许用户在配置弹窗中切换为本地直连渠道，默认允许 |
+| `channels` | object[] | 公开渠道信息；读取公开设置时根据已启用渠道生成，包含渠道 ID、协议、地址、开放模型和 `hasSystemApiKey`，不含系统 API Key |
+| `allowCustomChannel` | boolean | 是否允许用户使用个人 API Key 渠道，默认允许 |
+| `allowUserRemoteChannel` | boolean | 是否允许普通用户使用系统 API Key 的云端渠道，默认关闭；管理员始终可以使用 |
 
 `modelCosts` 每项字段：
 
@@ -66,8 +70,8 @@ description: settings 表中 public 和 private 配置结构说明
 
 | 模式 | 说明 |
 | --- | --- |
-| 云端渠道 | 使用后端 `/api/v1/*` 代理接口，请求会按模型名匹配 `private.value.channels` 中的可用渠道 |
-| 本地直连 | 默认可选；`allowCustomChannel` 关闭后不可选，用户在浏览器本地配置 `baseUrl`、`apiKey` 和模型列表后直接请求模型接口 |
+| 云端渠道 | 使用后端 `/api/v1/*` 代理接口，请求按模型和渠道 ID 匹配 `private.value.channels`，并使用管理员保存的系统 API Key |
+| 个人 API Key | 复用管理员配置的渠道协议、接口地址和开放模型，用户只选择模型并填写对应渠道的 API Key；未登录时密钥保存在当前浏览器，登录后密钥保存在 `user_configs.model_config` 并由后端代理请求 |
 
 `auth` 字段：
 
@@ -108,16 +112,18 @@ description: settings 表中 public 和 private 配置结构说明
 
 | 字段 | 类型 | 说明 |
 | --- | --- | --- |
-| `protocol` | string | 协议，当前为 `openai` |
+| `protocol` | string | 渠道协议，支持 `openai`、`kie`、`apimart` |
 | `name` | string | 渠道名称 |
 | `baseUrl` | string | OpenAI 兼容接口地址 |
-| `apiKey` | string | 渠道密钥 |
+| `apiKey` | string | 系统 API Key；云端渠道调用需要填写，个人 API Key 渠道可以留空 |
 | `models` | string[] | 该渠道可用模型 |
 | `weight` | number | 渠道权重；同一模型有多个可用渠道时按权重随机 |
 | `enabled` | boolean | 是否启用 |
 | `remark` | string | 备注 |
 
-后端调用模型时，会从已启用、已配置 `baseUrl` 和 `apiKey`、且 `models` 包含目标模型的渠道中选择一个。
+管理员保存渠道时，`apiKey` 留空会沿用原有系统 API Key；提交 `clearApiKey: true` 会显式清除原有系统 API Key。该请求字段不会写入持久化配置。
+
+云端渠道调用会从已启用、已配置 `baseUrl` 和系统 `apiKey`、且 `models` 包含目标模型的渠道中选择。公开配置中的 `hasSystemApiKey` 用于排除缺少系统 API Key 的云端渠道。个人 API Key 调用按用户提交的渠道 ID 读取管理员最新配置，并以用户保存的 API Key 替换系统 API Key；渠道停用、地址清空或模型移除后，后端会拒绝调用。
 
 `promptSync` 字段：
 

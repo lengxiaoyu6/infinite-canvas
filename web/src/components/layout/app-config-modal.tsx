@@ -1,15 +1,15 @@
 "use client";
 
-import { App, Button, Form, Input, Modal, Segmented, Select, Switch } from "antd";
+import { Alert, App, Button, Form, Input, Modal, Segmented, Select, Spin, Switch } from "antd";
+import { RefreshCw } from "lucide-react";
 import { useEffect, useState } from "react";
 
 import { ModelPicker } from "@/components/model-picker";
-import { fetchImageModels } from "@/services/api/image";
 import { fetchUserConfig, measureUserStorageProvider, syncUserModelConfig, syncUserStorageProvider } from "@/services/api/user-config";
 import { clearStorageConfigCache as clearFileStorageCache } from "@/services/file-storage";
 import { clearStorageConfigCache as clearImageStorageCache, defaultUserStorageProvider, defaultUserWebDAVStorageProvider, loadStorageConfig, loadUserS3StorageProvider, loadUserWebDAVStorageProvider, saveUserStorageProvider, saveUserWebDAVStorageProvider, type UserStorageProvider } from "@/services/image-storage";
 import { audioFormatOptions, audioVoiceOptions, normalizeAudioSpeedValue } from "@/lib/audio-generation";
-import { filterModelsByCapability, normalizeLocalChannels, useConfigStore, useEffectiveConfig, type AiConfig, type LocalModelChannel, type ModelCapability } from "@/stores/use-config-store";
+import { normalizeLocalChannels, useConfigStore, useEffectiveConfig, useIsModelConfigReady, type AiConfig, type ModelCapability } from "@/stores/use-config-store";
 import { useUserStore } from "@/stores/use-user-store";
 
 type ModelGroup = {
@@ -30,8 +30,8 @@ const modelGroups: ModelGroup[] = [
 
 export function AppConfigModal() {
     const { message } = App.useApp();
-    const [loadingModels, setLoadingModels] = useState(false);
     const [savingConfig, setSavingConfig] = useState(false);
+    const [modelConfigReloadVersion, setModelConfigReloadVersion] = useState(0);
     const [remoteStorageSyncEnabled, setRemoteStorageSyncEnabled] = useState(false);
     const [remoteWebDAVStorageSyncEnabled, setRemoteWebDAVStorageSyncEnabled] = useState(false);
     const [allowUserStorageProvider, setAllowUserStorageProvider] = useState(false);
@@ -42,6 +42,11 @@ export function AppConfigModal() {
     const [webDAVStorageUsageText, setWebDAVStorageUsageText] = useState("");
     const config = useConfigStore((state) => state.config);
     const updateConfig = useConfigStore((state) => state.updateConfig);
+    const switchModelConfigOwner = useConfigStore((state) => state.switchModelConfigOwner);
+    const beginUserModelConfigLoad = useConfigStore((state) => state.beginUserModelConfigLoad);
+    const applyUserModelConfig = useConfigStore((state) => state.applyUserModelConfig);
+    const failUserModelConfigLoad = useConfigStore((state) => state.failUserModelConfigLoad);
+    const modelConfigLoadFailed = useConfigStore((state) => state.modelConfigLoadFailed);
     const isConfigOpen = useConfigStore((state) => state.isConfigOpen);
     const shouldPromptContinue = useConfigStore((state) => state.shouldPromptContinue);
     const setConfigDialogOpen = useConfigStore((state) => state.setConfigDialogOpen);
@@ -50,34 +55,35 @@ export function AppConfigModal() {
     const token = useUserStore((state) => state.token);
     const user = useUserStore((state) => state.user);
     const effectiveConfig = useEffectiveConfig();
+    const isCurrentModelConfigReady = useIsModelConfigReady();
     const modelChannel = publicSettings?.modelChannel;
     const isLoggedIn = Boolean(token && user);
     const canUseRemoteChannel = isLoggedIn && (user?.role === "admin" || modelChannel?.allowUserRemoteChannel === true);
-    const allowCustomChannel = isLoggedIn && modelChannel?.allowCustomChannel === true;
-    const effectiveMode = canUseRemoteChannel ? (allowCustomChannel ? config.channelMode : "remote") : "local";
-    const localModelConfig: AiConfig = effectiveMode === "local" && config.channelMode !== "local" ? { ...config, channelMode: "local" } : config;
-    const modelConfig = effectiveMode === "remote" ? effectiveConfig : localModelConfig;
+    const allowCustomChannel = modelChannel?.allowCustomChannel === true;
+    const effectiveMode = canUseRemoteChannel && allowCustomChannel ? config.channelMode : canUseRemoteChannel ? "remote" : "local";
+    const modelConfig = effectiveConfig;
+    const selectedChannelIds = new Set(modelGroups.map((group) => modelConfig[group.channelKey]).filter(Boolean));
+    const selectedPersonalChannels = effectiveMode === "local" ? modelConfig.publicChannels.filter((channel) => selectedChannelIds.has(channel.id)) : [];
     const canUseUserStorageProvider = isLoggedIn && allowUserStorageProvider;
 
     useEffect(() => {
         setUserStorage(loadUserS3StorageProvider() || defaultUserStorageProvider());
         setUserWebDAVStorage(loadUserWebDAVStorageProvider() || defaultUserWebDAVStorageProvider());
-        if (!isConfigOpen || !token) return;
+        if (!isConfigOpen || !token || !user?.id) return;
+        const userId = user.id;
+        switchModelConfigOwner(userId);
+        const loadVersion = beginUserModelConfigLoad(userId);
+        if (!loadVersion) return;
         let canceled = false;
         void fetchUserConfig(token)
             .then((payload) => {
-                if (canceled) return;
                 const remoteConfig = payload.modelConfig;
                 const syncS3 = remoteConfig?.syncStorageConfig === true;
                 const syncWebDAV = remoteConfig?.syncWebDAVStorageConfig === true;
+                applyUserModelConfig(userId, loadVersion, remoteConfig);
+                if (canceled) return;
                 setRemoteStorageSyncEnabled(syncS3);
                 setRemoteWebDAVStorageSyncEnabled(syncWebDAV);
-                if (remoteConfig) {
-                    Object.entries(remoteConfig)
-                        .forEach(([key, value]) => updateConfig(key as keyof AiConfig, value as never));
-                }
-                updateConfig("syncStorageConfig", syncS3);
-                updateConfig("syncWebDAVStorageConfig", syncWebDAV);
                 if (syncS3 && payload.storageProvider?.s3) {
                     const next = { ...defaultUserStorageProvider(), ...payload.storageProvider.s3, type: "s3" as const };
                     setUserStorage(next);
@@ -89,11 +95,13 @@ export function AppConfigModal() {
                     saveUserWebDAVStorageProvider(next);
                 }
             })
-            .catch(() => { });
+            .catch(() => {
+                failUserModelConfigLoad(userId, loadVersion);
+            });
         return () => {
             canceled = true;
         };
-    }, [isConfigOpen, token, updateConfig]);
+    }, [applyUserModelConfig, beginUserModelConfigLoad, failUserModelConfigLoad, isConfigOpen, modelConfigReloadVersion, switchModelConfigOwner, token, user?.id]);
 
     useEffect(() => {
         if (!isConfigOpen) return;
@@ -111,13 +119,18 @@ export function AppConfigModal() {
     }, [isConfigOpen]);
 
     const finishConfig = async () => {
-        const localIncomplete = effectiveMode === "local" && normalizeLocalChannels(config).some((channel) => !channel.baseUrl.trim() || !channel.apiKey.trim());
+        if (!isCurrentModelConfigReady) {
+            message.warning("模型配置正在加载");
+            return;
+        }
+        const personalChannels = normalizeLocalChannels(config);
+        const localIncomplete = effectiveMode === "local" && selectedPersonalChannels.some((channel) => !personalChannels.find((item) => item.systemChannelId === channel.id)?.apiKey.trim());
         const modelIncomplete = !modelConfig.imageModel.trim() || !modelConfig.videoModel.trim() || !modelConfig.textModel.trim();
         if (userStorage.enabled && userWebDAVStorage.enabled) {
             message.error("S3/R2 与 WebDAV 不能同时启用");
             return;
         }
-        if (!canUseRemoteChannel && config.channelMode !== "local") updateConfig("channelMode", "local");
+        if (!canUseRemoteChannel && allowCustomChannel && config.channelMode !== "local") updateConfig("channelMode", "local");
         else if (canUseRemoteChannel && !allowCustomChannel && config.channelMode !== "remote") updateConfig("channelMode", "remote");
         if (canUseUserStorageProvider) {
             saveUserStorageProvider(userStorage);
@@ -126,8 +139,9 @@ export function AppConfigModal() {
         setSavingConfig(true);
         try {
             if (token) {
-                const configToSave = effectiveMode === "local" && config.channelMode !== "local" ? { ...config, channelMode: "local" as const } : config;
-                await syncUserModelConfig(token, configToSave);
+                const saveLoadVersion = useConfigStore.getState().modelConfigLoadVersion;
+                const payload = await syncUserModelConfig(token, effectiveConfig);
+                if (user?.id) applyUserModelConfig(user.id, saveLoadVersion, payload.modelConfig);
             }
             const providers = {
                 ...(config.syncStorageConfig || remoteStorageSyncEnabled ? { s3: config.syncStorageConfig ? userStorage : { ...userStorage, enabled: false, endpoint: "", bucket: "", accessKeyId: "", secretAccessKey: "" } } : {}),
@@ -142,7 +156,7 @@ export function AppConfigModal() {
             clearFileStorageCache();
             setConfigDialogOpen(false);
             if ((config.syncStorageConfig || config.syncWebDAVStorageConfig) && !token) message.warning("请登录后再同步配置");
-            else if (localIncomplete || modelIncomplete) message.warning("部分模型或本地渠道密钥尚未配置完整，配置已保存");
+            else if (localIncomplete || modelIncomplete) message.warning("部分模型或个人渠道密钥尚未配置完整，配置已保存");
             else message.success(shouldPromptContinue ? "配置已保存，请继续刚才的请求" : "配置已保存");
             clearPromptContinue();
         } catch (error) {
@@ -152,80 +166,18 @@ export function AppConfigModal() {
         }
     };
 
-    const refreshModels = async () => {
-        if (effectiveMode === "remote") return;
+    const updatePersonalAPIKey = (systemChannelId: string, apiKey: string, models: string[]) => {
         const channels = normalizeLocalChannels(config);
-        if (channels.some((channel) => !channel.baseUrl.trim() || !channel.apiKey.trim())) {
-            message.error("请先填写所有本地渠道的 Base URL 和 API Key");
-            return;
-        }
-        setLoadingModels(true);
-        try {
-            const nextChannels = await Promise.all(channels.map(async (channel) => ({ ...channel, models: await fetchImageModels(configForLocalChannel(config, channel)) })));
-            updateLocalChannels(nextChannels);
-            message.success("模型列表已更新");
-        } catch (error) {
-            message.error(error instanceof Error ? error.message : "读取模型失败");
-        } finally {
-            setLoadingModels(false);
-        }
-    };
-
-    const updateLocalChannels = (channels: LocalModelChannel[]) => {
-        const normalized = channels.length ? channels : normalizeLocalChannels({ baseUrl: config.baseUrl, apiKey: config.apiKey, models: config.models });
-        const models = uniqueModels(normalized.flatMap((channel) => channel.models));
-        const nextImageModels = filterModelsByCapability(models, "image");
-        const nextVideoModels = filterModelsByCapability(models, "video");
-        const nextTextModels = filterModelsByCapability(models, "text");
-        const nextAudioModels = filterModelsByCapability(models, "audio");
-        const imageModel = nextImageModels.includes(config.imageModel) ? config.imageModel : nextImageModels[0] || "";
-        const videoModel = nextVideoModels.includes(config.videoModel) ? config.videoModel : nextVideoModels[0] || "";
-        const textModel = nextTextModels.includes(config.textModel) ? config.textModel : nextTextModels[0] || "";
-        const audioModel = nextAudioModels.includes(config.audioModel) ? config.audioModel : nextAudioModels[0] || "";
-        updateConfig("localChannels", normalized);
-        updateConfig("models", models);
-        updateConfig("imageModels", nextImageModels);
-        updateConfig("videoModels", nextVideoModels);
-        updateConfig("textModels", nextTextModels);
-        updateConfig("audioModels", nextAudioModels);
-        updateConfig("imageModel", imageModel);
-        updateConfig("videoModel", videoModel);
-        updateConfig("textModel", textModel);
-        updateConfig("audioModel", audioModel);
-        updateConfig("imageChannelId", channelIdForLocalModel(normalized, imageModel, config.imageChannelId));
-        updateConfig("videoChannelId", channelIdForLocalModel(normalized, videoModel, config.videoChannelId));
-        updateConfig("textChannelId", channelIdForLocalModel(normalized, textModel, config.textChannelId));
-        updateConfig("audioChannelId", channelIdForLocalModel(normalized, audioModel, config.audioChannelId));
-        updateConfig("baseUrl", normalized[0]?.baseUrl || config.baseUrl);
-        updateConfig("apiKey", normalized[0]?.apiKey || config.apiKey);
-    };
-
-    const patchLocalChannel = (id: string, patch: Partial<LocalModelChannel>) => {
-        updateLocalChannels(normalizeLocalChannels(config).map((channel) => (channel.id === id ? { ...channel, ...patch } : channel)));
-    };
-
-    const addLocalChannel = () => {
-        updateLocalChannels([...normalizeLocalChannels(config), { id: "local-" + Date.now(), name: "新渠道", baseUrl: "", apiKey: "", models: [] }]);
-    };
-
-    const removeLocalChannel = (id: string) => {
-        updateLocalChannels(normalizeLocalChannels(config).filter((channel) => channel.id !== id));
-    };
-
-    const refreshLocalChannelModels = async (channel: LocalModelChannel) => {
-        if (!channel.baseUrl.trim() || !channel.apiKey.trim()) {
-            message.error("请先填写该渠道的 Base URL 和 API Key");
-            return;
-        }
-        setLoadingModels(true);
-        try {
-            patchLocalChannel(channel.id, { models: await fetchImageModels(configForLocalChannel(config, channel)) });
-            message.success("模型列表已更新");
-        } catch (error) {
-            message.error(error instanceof Error ? error.message : "读取模型失败");
-        } finally {
-            setLoadingModels(false);
-        }
+        const current = channels.find((channel) => channel.systemChannelId === systemChannelId);
+        const next = {
+            id: systemChannelId,
+            systemChannelId,
+            apiKey,
+            models: [...models],
+        };
+        updateConfig("localChannels", current
+            ? channels.map((channel) => channel.systemChannelId === systemChannelId ? next : channel)
+            : [...channels, next]);
     };
 
 
@@ -275,13 +227,14 @@ export function AppConfigModal() {
             onCancel={() => setConfigDialogOpen(false)}
             styles={{ body: { maxHeight: "72vh", overflowY: "auto", paddingRight: 18 } }}
             footer={
-                <Button type="primary" loading={savingConfig} onClick={() => void finishConfig()}>
+                <Button type="primary" loading={savingConfig} disabled={!isCurrentModelConfigReady} onClick={() => void finishConfig()}>
                     完成
                 </Button>
             }
         >
             <div className="pt-1">
-                <Form layout="vertical" requiredMark={false}>
+                {isCurrentModelConfigReady ? (
+                    <Form layout="vertical" requiredMark={false}>
                     {allowCustomChannel && canUseRemoteChannel ? (
                         <Form.Item label="渠道模式" className="mb-5">
                             <Segmented
@@ -290,61 +243,18 @@ export function AppConfigModal() {
                                 value={effectiveMode}
                                 onChange={(value) => updateConfig("channelMode", value as AiConfig["channelMode"])}
                                 options={[
-                                    { label: "本地直连", value: "local" },
+                                    { label: "个人 API Key", value: "local" },
                                     { label: "云端渠道", value: "remote" },
                                 ]}
                             />
                         </Form.Item>
                     ) : null}
-                    {effectiveMode === "local" ? (
-                        <>
-                            <div className="mb-5 space-y-3 rounded-lg border border-stone-200 p-3 dark:border-stone-800">
-                                <div className="flex items-center justify-between gap-3">
-                                    <div>
-                                        <div className="text-sm font-medium">本地模型渠道</div>
-                                        <div className="mt-1 text-xs text-stone-500">可为生图、视频、文本、音频分别选择不同渠道的模型。</div>
-                                    </div>
-                                    <Button size="small" onClick={addLocalChannel}>
-                                        新增渠道
-                                    </Button>
-                                </div>
-                                {normalizeLocalChannels(config).map((channel, index) => (
-                                    <div key={channel.id} className="space-y-2 rounded-md bg-stone-50 p-2 dark:bg-stone-900">
-                                        <div className="grid gap-2 md:grid-cols-[160px_minmax(0,1fr)_minmax(0,1fr)_auto]">
-                                            <Input value={channel.name} placeholder="渠道名称" onChange={(event) => patchLocalChannel(channel.id, { name: event.target.value })} />
-                                            <Input value={channel.baseUrl} placeholder="Base URL" onChange={(event) => patchLocalChannel(channel.id, { baseUrl: event.target.value })} />
-                                            <Input.Password value={channel.apiKey} placeholder="API Key" onChange={(event) => patchLocalChannel(channel.id, { apiKey: event.target.value })} />
-                                            <div className="flex gap-2">
-                                                <Button size="small" loading={loadingModels} onClick={() => void refreshLocalChannelModels(channel)}>
-                                                    拉取
-                                                </Button>
-                                                <Button size="small" danger disabled={index === 0 && normalizeLocalChannels(config).length === 1} onClick={() => removeLocalChannel(channel.id)}>
-                                                    删除
-                                                </Button>
-                                            </div>
-                                        </div>
-                                        <div className="text-xs text-stone-500">已保存 {channel.models.length} 个模型</div>
-                                    </div>
-                                ))}
-                            </div>
-                            <div className="mb-5 flex items-center justify-between gap-3 rounded-lg border border-stone-200 px-3 py-2 dark:border-stone-800">
-                                <div className="min-w-0">
-                                    <div className="text-sm font-medium">模型列表</div>
-                                    <div className="mt-1 text-xs text-stone-500">当前已保存 {config.models.length} 个模型</div>
-                                </div>
-                                <div className="flex shrink-0 flex-wrap items-center justify-end gap-2">
-                                    <Button size="small" loading={loadingModels} onClick={() => void refreshModels()}>
-                                        拉取全部渠道
-                                    </Button>
-                                </div>
-                            </div>
-                        </>
-                    ) : (
+                    {effectiveMode === "remote" ? (
                         <div className="mb-5 rounded-lg border border-stone-200 p-3 text-sm text-stone-500 dark:border-stone-800">
                             <div className="font-medium text-stone-900 dark:text-stone-100">云端渠道</div>
-                            <div className="mt-1">由系统后台渠道转发请求，当前可用 {modelChannel?.availableModels.length || 0} 个模型。</div>
+                            <div className="mt-1">由系统后台渠道转发请求，当前可用 {modelConfig.models.length} 个模型。</div>
                         </div>
-                    )}
+                    ) : null}
                     <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
                         {modelGroups.map((group) => (
                             <Form.Item key={group.modelKey} label={group.defaultLabel} className="mb-4">
@@ -352,6 +262,22 @@ export function AppConfigModal() {
                             </Form.Item>
                         ))}
                     </div>
+                    {effectiveMode === "local" && allowCustomChannel ? (
+                        <div className="mb-5">
+                            <div className="mb-3 text-sm font-medium">个人 API Key</div>
+                            <div className="grid gap-4 md:grid-cols-2">
+                                {selectedPersonalChannels.map((channel) => (
+                                    <Form.Item key={channel.id} label={channel.name || "模型渠道"} className="mb-0">
+                                        <Input.Password
+                                            value={normalizeLocalChannels(config).find((item) => item.systemChannelId === channel.id)?.apiKey || ""}
+                                            placeholder="API Key"
+                                            onChange={(event) => updatePersonalAPIKey(channel.id, event.target.value, channel.models)}
+                                        />
+                                    </Form.Item>
+                                ))}
+                            </div>
+                        </div>
+                    ) : null}
                     <div className="grid gap-4 md:grid-cols-4">
                         <Form.Item label="画布默认生图张数" extra="新建画布生图和配置节点默认使用，单个节点仍可单独覆盖。" className="mb-4">
                             <Input
@@ -457,7 +383,25 @@ export function AppConfigModal() {
                             <Input.TextArea rows={3} value={config.systemPrompt} placeholder="例如：你是一位擅长电影感写实摄影的视觉导演。" onChange={(event) => updateConfig("systemPrompt", event.target.value)} />
                         </Form.Item>
                     ) : null}
-                </Form>
+                    </Form>
+                ) : modelConfigLoadFailed ? (
+                    <div className="flex min-h-48 items-center justify-center">
+                        <Alert
+                            type="error"
+                            showIcon
+                            message="账号模型配置读取失败"
+                            action={
+                                <Button icon={<RefreshCw size={14} />} onClick={() => setModelConfigReloadVersion((value) => value + 1)}>
+                                    重新读取
+                                </Button>
+                            }
+                        />
+                    </div>
+                ) : (
+                    <div className="flex min-h-48 items-center justify-center" aria-label="正在加载模型配置">
+                        <Spin size="large" />
+                    </div>
+                )}
             </div>
         </Modal>
     );
@@ -475,35 +419,10 @@ function FeatureSwitch({ title, description, checked, onChange }: { title: strin
     );
 }
 
-function configForLocalChannel(config: AiConfig, channel: LocalModelChannel): AiConfig {
-    return {
-        ...config,
-        channelMode: "local",
-        baseUrl: channel.baseUrl,
-        apiKey: channel.apiKey,
-        localChannels: [{ ...channel }],
-        imageChannelId: channel.id,
-        videoChannelId: channel.id,
-        textChannelId: channel.id,
-        audioChannelId: channel.id,
-        model: channel.models[0] || config.model,
-    };
-}
-
-function channelIdForLocalModel(channels: LocalModelChannel[], model: string, currentId: string) {
-    if (!channels.length) return "";
-    if (channels.some((channel) => channel.id === currentId && (!model || channel.models.includes(model)))) return currentId;
-    return channels.find((channel) => model && channel.models.includes(model))?.id || channels[0].id;
-}
-
 function normalizeImageCount(value: string) {
     return String(Math.max(1, Math.min(15, Math.floor(Math.abs(Number(value)) || 3))));
 }
 
-
-function uniqueModels(models: string[]) {
-    return Array.from(new Set(models.map((model) => model.trim()).filter(Boolean)));
-}
 
 function formatBytes(bytes: number) {
     if (bytes < 1024) return `${bytes}B`;

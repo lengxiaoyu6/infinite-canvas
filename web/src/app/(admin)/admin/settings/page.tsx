@@ -42,9 +42,9 @@ const emptySettings: AdminSettings = {
         auth: { allowRegister: true, linuxDo: { enabled: false } },
         storage: { mode: "local_indexeddb", allowUserProvider: false },
     },
-    private: { channels: [], promptSync: { enabled: true, cron: "0 0 * * *" }, aiLog: { localDirectReportEnabled: false, cleanup: { enabled: false, retentionDays: 14, cron: "0 3 * * *" } }, auth: { linuxDo: { clientId: "", clientSecret: "" } }, storage: { mode: "local_indexeddb", allowUserProvider: false, allowUserGlobalProvider: true, providers: [], roundRobinCursor: 0, capacityCheck: { enabled: false, cron: "0 */6 * * *" }, capacityLimitBytes: 9 * 1024 * 1024 * 1024 } },
+    private: { channels: [], promptSync: { enabled: true, cron: "0 0 * * *" }, aiLog: { cleanup: { enabled: false, retentionDays: 14, cron: "0 3 * * *" } }, auth: { linuxDo: { clientId: "", clientSecret: "" } }, storage: { mode: "local_indexeddb", allowUserProvider: false, allowUserGlobalProvider: true, providers: [], roundRobinCursor: 0, capacityCheck: { enabled: false, cron: "0 */6 * * *" }, capacityLimitBytes: 9 * 1024 * 1024 * 1024 } },
 };
-const emptyChannel: AdminModelChannel = { id: "", protocol: "openai", name: "", baseUrl: "", apiKey: "", models: [], weight: 1, timeout: 600, enabled: true, remark: "" };
+const emptyChannel: AdminModelChannel = { id: "", protocol: "openai", name: "", baseUrl: "", apiKey: "", clearApiKey: false, models: [], weight: 1, timeout: 600, enabled: true, remark: "" };
 const emptyS3StorageProvider: AdminStorageProvider = { id: "", name: "", type: "s3", endpoint: "", region: "auto", bucket: "", accessKeyId: "", secretAccessKey: "", publicBaseUrl: "", pathPrefix: "canvas", username: "", password: "", weight: 1, enabled: true, ownerUserId: "", capacityBytes: 0, capacityCheckedAt: "", capacityExceeded: false };
 const emptyWebDAVStorageProvider: AdminStorageProvider = { ...emptyS3StorageProvider, name: "", type: "webdav", region: "" };
 
@@ -497,12 +497,12 @@ export default function AdminSettingsPage() {
                                         </Form.Item>
                                     </Col>
                                     <Col span={24}>
-                                        <Form.Item name={["public", "modelChannel", "allowCustomChannel"]} label="是否允许用户自定义渠道" extra="开启后，前端可提供用户自定义 baseUrl 直连模式" valuePropName="checked">
+                                        <Form.Item name={["public", "modelChannel", "allowCustomChannel"]} label="是否允许个人 API Key 渠道" extra="开启后，用户可选择管理员配置的模型并填写个人 API Key" valuePropName="checked">
                                             <Switch />
                                         </Form.Item>
                                     </Col>
                                     <Col span={24}>
-                                        <Form.Item name={["public", "modelChannel", "allowUserRemoteChannel"]} label="是否允许普通用户使用云端渠道" extra="关闭后，普通用户只能使用本地直连；管理员仍可使用云端渠道" valuePropName="checked">
+                                        <Form.Item name={["public", "modelChannel", "allowUserRemoteChannel"]} label="是否允许普通用户使用云端渠道" extra="关闭后，普通用户使用个人 API Key 渠道；管理员仍可使用云端渠道" valuePropName="checked">
                                             <Switch />
                                         </Form.Item>
                                     </Col>
@@ -605,22 +605,17 @@ export default function AdminSettingsPage() {
                                 </Card>
                                 <Card size="small" title="AI 调用日志">
                                     <Row gutter={16}>
-                                        <Col xs={24} md={6}>
-                                            <Form.Item name={["private", "aiLog", "localDirectReportEnabled"]} label="本地直连日志上报" valuePropName="checked" extra="关闭后本地直连不上报；云端渠道仍默认记录。">
-                                                <Switch />
-                                            </Form.Item>
-                                        </Col>
-                                        <Col xs={24} md={6}>
+                                        <Col xs={24} md={8}>
                                             <Form.Item name={["private", "aiLog", "cleanup", "enabled"]} label="开启自动清理" valuePropName="checked" extra="日志按天写入本地文件，不保存到 SQLite。">
                                                 <Switch />
                                             </Form.Item>
                                         </Col>
-                                        <Col xs={24} md={6}>
+                                        <Col xs={24} md={8}>
                                             <Form.Item name={["private", "aiLog", "cleanup", "retentionDays"]} label="保留天数" extra="默认保留 14 天，超过后定时删除对应日期日志文件。">
                                                 <InputNumber min={1} precision={0} className="!w-full" />
                                             </Form.Item>
                                         </Col>
-                                        <Col xs={24} md={6}>
+                                        <Col xs={24} md={8}>
                                             <Form.Item name={["private", "aiLog", "cleanup", "cron"]} label="清理 Cron">
                                                 <Input placeholder="0 3 * * *" />
                                             </Form.Item>
@@ -889,6 +884,7 @@ export default function AdminSettingsPage() {
                                         options={[
                                             { label: "OpenAI", value: "openai" },
                                             { label: "KIE", value: "kie" },
+                                            { label: "APIMart", value: "apimart" },
                                         ]}
                                     />
                                 </Form.Item>
@@ -914,10 +910,28 @@ export default function AdminSettingsPage() {
                                 </Form.Item>
                             </Col>
                             <Col span={24}>
-                                <Form.Item name="apiKey" label="API Key" rules={editingChannelIndex === null ? [{ required: true, message: "请输入 API Key" }] : []}>
-                                    <Input.Password placeholder={editingChannelIndex === null ? "" : "留空则沿用已保存的 API Key"} />
+                                <Form.Item name="apiKey" label="API Key" extra="云端渠道使用系统 API Key；仅供个人 API Key 渠道使用时可留空">
+                                    <Input.Password
+                                        placeholder={editingChannelIndex === null ? "可留空" : "留空则沿用已保存的 API Key"}
+                                        onChange={(event) => {
+                                            if (event.target.value) channelForm.setFieldValue("clearApiKey", false);
+                                        }}
+                                    />
                                 </Form.Item>
                             </Col>
+                            {editingChannelIndex !== null ? (
+                                <Col span={24}>
+                                    <Form.Item name="clearApiKey" valuePropName="checked">
+                                        <Checkbox
+                                            onChange={(event) => {
+                                                if (event.target.checked) channelForm.setFieldValue("apiKey", "");
+                                            }}
+                                        >
+                                            保存时清除系统 API Key
+                                        </Checkbox>
+                                    </Form.Item>
+                                </Col>
+                            ) : null}
                             <Col span={24}>
                                 <Form.Item label="渠道可用模型">
                                     <Space.Compact style={{ width: "100%" }}>
@@ -1131,7 +1145,6 @@ function normalizePrivateSetting(setting: Partial<AdminSettings["private"]> = {}
             cron: setting.promptSync?.cron || "0 0 * * *",
         },
         aiLog: {
-            localDirectReportEnabled: setting.aiLog?.localDirectReportEnabled === true,
             cleanup: {
                 enabled: setting.aiLog?.cleanup?.enabled === true,
                 retentionDays: Number(setting.aiLog?.cleanup?.retentionDays) || 14,
@@ -1190,6 +1203,7 @@ function normalizeChannel(item: Partial<AdminModelChannel> = {}): AdminModelChan
         name: item.name || "",
         baseUrl: item.baseUrl || "",
         apiKey: item.apiKey || "",
+        clearApiKey: item.clearApiKey === true,
         models: item.models || [],
         weight: Math.max(1, Number(item.weight) || 1),
         timeout: Math.max(1, Number(item.timeout) || 600),

@@ -14,16 +14,17 @@ const (
 
 // ModelChannel 模型渠道配置。
 type ModelChannel struct {
-	ID       string   `json:"id"`
-	Protocol string   `json:"protocol"`
-	Name     string   `json:"name"`
-	BaseURL  string   `json:"baseUrl"`
-	APIKey   string   `json:"apiKey"`
-	Models   []string `json:"models"`
-	Weight   int      `json:"weight"`
-	Timeout  int      `json:"timeout"`
-	Enabled  bool     `json:"enabled"`
-	Remark   string   `json:"remark"`
+	ID          string   `json:"id"`
+	Protocol    string   `json:"protocol"`
+	Name        string   `json:"name"`
+	BaseURL     string   `json:"baseUrl"`
+	APIKey      string   `json:"apiKey"`
+	ClearAPIKey bool     `json:"clearApiKey,omitempty"`
+	Models      []string `json:"models"`
+	Weight      int      `json:"weight"`
+	Timeout     int      `json:"timeout"`
+	Enabled     bool     `json:"enabled"`
+	Remark      string   `json:"remark"`
 }
 
 // ModelCost 模型算力点配置。
@@ -56,14 +57,16 @@ type SystemPromptSetting struct {
 }
 
 type PublicModelChannelInfo struct {
-	ID      string   `json:"id"`
-	Name    string   `json:"name"`
-	BaseURL string   `json:"baseUrl"`
-	Models  []string `json:"models"`
-	Weight  int      `json:"weight"`
-	Timeout int      `json:"timeout"`
-	Enabled bool     `json:"enabled"`
-	Remark  string   `json:"remark"`
+	ID              string   `json:"id"`
+	Protocol        string   `json:"protocol"`
+	Name            string   `json:"name"`
+	BaseURL         string   `json:"baseUrl"`
+	Models          []string `json:"models"`
+	Weight          int      `json:"weight"`
+	Timeout         int      `json:"timeout"`
+	Enabled         bool     `json:"enabled"`
+	Remark          string   `json:"remark"`
+	HasSystemAPIKey bool     `json:"hasSystemApiKey"`
 }
 
 // PublicSetting 公开配置。
@@ -98,8 +101,7 @@ type PrivateSetting struct {
 }
 
 type AILogSetting struct {
-	LocalDirectReportEnabled *bool               `json:"localDirectReportEnabled"`
-	Cleanup                  AILogCleanupSetting `json:"cleanup"`
+	Cleanup AILogCleanupSetting `json:"cleanup"`
 }
 
 type AILogCleanupSetting struct {

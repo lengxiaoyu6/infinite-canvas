@@ -82,16 +82,11 @@ docker compose -f docker-compose.local.yml up -d --build
 
 如需要拉取提示词，可前往:`http://localhost:3000/admin/prompts`
 
-## New API 自动配置
+## 模型渠道配置
 
-如果使用 New API，可在 `系统设置 -> 聊天方式 -> 添加聊天设置` 中填入：
+管理员先在管理后台配置渠道协议、接口地址和可用模型。个人 API Key 模式下，用户选择模型并填写对应渠道的 API Key，无需重复填写接口地址。
 
-```text
-https://infinite-canvas-cpco.onrender.com?apiKey={key}&baseUrl={address}
-```
-
-跳转后会自动打开配置弹窗并填入 API Key 和 Base URL。
-如果自己部署了，可以把 `https://infinite-canvas-cpco.onrender.com` 替换成你部署的地址。
+未登录时，API Key 保存在当前浏览器；登录账号保存配置后，模型选择和 API Key 会保存到账号配置，并可在其他浏览器登录后恢复。
 
 ## 效果展示
 

@@ -55,7 +55,6 @@ func New() *gin.Engine {
 	v1.GET("/canvas/audio-tasks/:id", func(c *gin.Context) {
 		handler.GetCanvasAudioTask(c.Writer, c.Request, c.Param("id"))
 	})
-	v1.POST("/ai-logs", gin.WrapF(handler.ClientAICallLog))
 	v1.POST("/videos", gin.WrapF(handler.AIVideos))
 	v1.GET("/video-tasks", gin.WrapF(handler.UserVideoTasks))
 	v1.DELETE("/video-tasks/:id", func(c *gin.Context) {

@@ -5,13 +5,12 @@ import { create } from "zustand";
 import { persist } from "zustand/middleware";
 
 import { apiGet } from "@/services/api/request";
-import type { AdminPublicSettings } from "@/services/api/admin";
+import type { AdminPublicModelChannelInfo, AdminPublicSettings } from "@/services/api/admin";
 import { useUserStore } from "@/stores/use-user-store";
 
 export type LocalModelChannel = {
     id: string;
-    name: string;
-    baseUrl: string;
+    systemChannelId: string;
     apiKey: string;
     models: string[];
 };
@@ -69,7 +68,7 @@ export type AiConfig = {
         workflowAgent: string;
     };
     localChannels: LocalModelChannel[];
-    publicChannels: Array<{ id?: string; name?: string; baseUrl?: string; models?: string[]; weight?: number; timeout?: number; enabled?: boolean; remark?: string }>;
+    publicChannels: AdminPublicModelChannelInfo[];
     syncStorageConfig: boolean;
     syncWebDAVStorageConfig: boolean;
     activeChannelId: string;
@@ -143,11 +142,20 @@ export const defaultConfig: AiConfig = {
 
 type ConfigStore = {
     config: AiConfig;
+    modelConfigOwnerId: string;
+    isModelConfigReady: boolean;
+    modelConfigLoadFailed: boolean;
+    modelConfigLoadVersion: number;
+    anonymousConfig: AiConfig;
     publicSettings: AdminPublicSettings | null;
     isPublicSettingsLoading: boolean;
     isConfigOpen: boolean;
     shouldPromptContinue: boolean;
     updateConfig: <K extends keyof AiConfig>(key: K, value: AiConfig[K]) => void;
+    switchModelConfigOwner: (userId: string) => void;
+    beginUserModelConfigLoad: (userId: string) => number;
+    applyUserModelConfig: (userId: string, loadVersion: number, config?: Partial<AiConfig>) => void;
+    failUserModelConfigLoad: (userId: string, loadVersion: number) => void;
     loadPublicSettings: () => Promise<void>;
     isAiConfigReady: (config: AiConfig, model: string) => boolean;
     openConfigDialog: (shouldPromptContinue?: boolean) => void;
@@ -155,31 +163,32 @@ type ConfigStore = {
     clearPromptContinue: () => void;
 };
 
-function resolveEffectiveConfig(config: AiConfig, modelChannel: AdminPublicSettings["modelChannel"] | null, canUseRemoteChannel: boolean) {
-    const channelMode = canUseRemoteChannel ? (modelChannel?.allowCustomChannel ? config.channelMode : "remote") : "local";
-    if (channelMode === "local" || !modelChannel) {
-        const localChannels = normalizeLocalChannels(config);
-        return {
-            ...config,
-            channelMode,
-            localChannels,
-            models: normalizeModelList(localChannels.flatMap((channel) => channel.models)),
-            publicChannels: modelChannel?.channels || [],
-        };
-    }
-    const models = modelChannel.availableModels;
+function resolveEffectiveConfig(config: AiConfig, modelChannel: AdminPublicSettings["modelChannel"] | null, canUseRemoteChannel: boolean, canUsePersonalChannel: boolean) {
+    const channelMode = canUseRemoteChannel && canUsePersonalChannel ? config.channelMode : canUseRemoteChannel ? "remote" : "local";
+    const canUseChannelMode = channelMode === "remote" ? canUseRemoteChannel : canUsePersonalChannel;
+    const availableModels = normalizeModelList(modelChannel?.availableModels || []);
+    const availableModelSet = new Set(availableModels);
+    const publicChannels = (canUseChannelMode ? modelChannel?.channels || config.publicChannels : [])
+        .filter((channel) => channelMode === "local" || channel.hasSystemApiKey)
+        .map((channel) => ({
+            ...channel,
+            models: normalizeModelList(channel.models).filter((model) => !availableModelSet.size || availableModelSet.has(model)),
+        }))
+        .filter((channel) => channel.models.length > 0);
+    const models = normalizeModelList(publicChannels.flatMap((channel) => channel.models));
     const textModels = filterModelsByCapability(models, "text");
     const imageModels = filterModelsByCapability(models, "image");
     const videoModels = filterModelsByCapability(models, "video");
     const audioModels = filterModelsByCapability(models, "audio");
-    const fallbackTextModel = validDefault(modelChannel.defaultTextModel, textModels) || preferredModel(textModels, isTextModelName);
-    const fallbackModel = validDefault(modelChannel.defaultModel, textModels) || fallbackTextModel;
-    const fallbackImageModel = validDefault(modelChannel.defaultImageModel, imageModels) || preferredModel(imageModels, isImageModelName);
-    const fallbackVideoModel = validDefault(modelChannel.defaultVideoModel, videoModels) || preferredModel(videoModels, isVideoModelName);
+    const fallbackTextModel = validDefault(modelChannel?.defaultTextModel || "", textModels) || preferredModel(textModels, isTextModelName);
+    const fallbackModel = validDefault(modelChannel?.defaultModel || "", textModels) || fallbackTextModel;
+    const fallbackImageModel = validDefault(modelChannel?.defaultImageModel || "", imageModels) || preferredModel(imageModels, isImageModelName);
+    const fallbackVideoModel = validDefault(modelChannel?.defaultVideoModel || "", videoModels) || preferredModel(videoModels, isVideoModelName);
     const fallbackAudioModel = preferredModel(audioModels, isAudioModelName);
-    return {
+    const resolved: AiConfig = {
         ...config,
         channelMode,
+        localChannels: normalizeLocalChannels(config),
         models,
         imageModels,
         videoModels,
@@ -190,9 +199,19 @@ function resolveEffectiveConfig(config: AiConfig, modelChannel: AdminPublicSetti
         videoModel: videoModels.includes(config.videoModel) ? config.videoModel : fallbackVideoModel,
         textModel: textModels.includes(config.textModel) ? config.textModel : fallbackTextModel || fallbackModel,
         audioModel: audioModels.includes(config.audioModel) ? config.audioModel : fallbackAudioModel,
-        systemPrompt: modelChannel.systemPrompt,
-        publicChannels: modelChannel.channels || [],
+        systemPrompt: channelMode === "remote" ? modelChannel?.systemPrompt || "" : config.systemPrompt,
+        publicChannels,
     };
+    resolved.imageChannelId = channelIdForModel(resolved, resolved.imageModel, config.imageChannelId);
+    resolved.videoChannelId = channelIdForModel(resolved, resolved.videoModel, config.videoChannelId);
+    resolved.textChannelId = channelIdForModel(resolved, resolved.textModel, config.textChannelId);
+    resolved.audioChannelId = channelIdForModel(resolved, resolved.audioModel, config.audioChannelId);
+    if (channelMode === "local") {
+        const channel = localChannelForActiveModel(resolved);
+        resolved.baseUrl = channel?.baseUrl || "";
+        resolved.apiKey = channel?.apiKey || "";
+    }
+    return resolved;
 }
 
 function validDefault(model: string, models: string[]) {
@@ -306,26 +325,81 @@ export function selectableModelsByCapability(config: AiConfig, capability?: Mode
     return filterModelsByCapability(config.models, capability);
 }
 
-function isAiConfigReady(config: AiConfig, model: string) {
+function hasCompleteAiConfig(config: AiConfig, model: string) {
     const channel = localChannelForActiveModel({ ...config, model });
     return Boolean(model.trim()) && (config.channelMode === "remote" || Boolean(channel?.baseUrl.trim() && channel?.apiKey.trim()));
+}
+
+function isModelConfigReadyForSession(modelConfigOwnerId: string, isModelConfigReady: boolean, token: string, userId: string | undefined, isUserReady: boolean) {
+    const sessionOwnerId = token && userId ? userId : "";
+    return isUserReady && isModelConfigReady && modelConfigOwnerId === sessionOwnerId;
 }
 
 export const useConfigStore = create<ConfigStore>()(
     persist(
         (set, get) => ({
             config: defaultConfig,
+            modelConfigOwnerId: "",
+            isModelConfigReady: true,
+            modelConfigLoadFailed: false,
+            modelConfigLoadVersion: 0,
+            anonymousConfig: configForBrowserStorage(defaultConfig),
             publicSettings: null,
             isPublicSettingsLoading: false,
             isConfigOpen: false,
             shouldPromptContinue: false,
             updateConfig: (key, value) =>
-                set((state) => ({
-                    config: {
-                        ...state.config,
-                        [key]: value,
-                    },
-                })),
+                set((state) => {
+                    const config = { ...state.config, [key]: value };
+                    return {
+                        config,
+                        ...(!state.modelConfigOwnerId ? { anonymousConfig: configForBrowserStorage(config) } : {}),
+                    };
+                }),
+            switchModelConfigOwner: (userId) =>
+                set((state) => {
+                    const ownerId = userId.trim();
+                    if (state.modelConfigOwnerId === ownerId) return state;
+                    const anonymousConfig = state.modelConfigOwnerId ? state.anonymousConfig : configForBrowserStorage(state.config);
+                    return {
+                        modelConfigOwnerId: ownerId,
+                        isModelConfigReady: !ownerId,
+                        modelConfigLoadFailed: false,
+                        modelConfigLoadVersion: state.modelConfigLoadVersion + 1,
+                        anonymousConfig,
+                        config: ownerId ? configForBrowserStorage(defaultConfig) : anonymousConfig,
+                    };
+                }),
+            beginUserModelConfigLoad: (userId) => {
+                const ownerId = userId.trim();
+                const state = get();
+                if (!ownerId || state.modelConfigOwnerId !== ownerId) return 0;
+                const loadVersion = state.modelConfigLoadVersion + 1;
+                set({ modelConfigLoadVersion: loadVersion, isModelConfigReady: false, modelConfigLoadFailed: false });
+                return loadVersion;
+            },
+            applyUserModelConfig: (userId, loadVersion, config) =>
+                set((state) => {
+                    if (!userId || state.modelConfigOwnerId !== userId || state.modelConfigLoadVersion !== loadVersion) return state;
+                    const remoteConfig = config || {};
+                    return {
+                        isModelConfigReady: true,
+                        modelConfigLoadFailed: false,
+                        config: {
+                            ...defaultConfig,
+                            ...remoteConfig,
+                            systemPrompts: { ...defaultConfig.systemPrompts, ...(remoteConfig.systemPrompts || {}) },
+                            localChannels: normalizeLocalChannels(remoteConfig),
+                            baseUrl: "",
+                            apiKey: "",
+                            publicChannels: [],
+                            syncStorageConfig: remoteConfig.syncStorageConfig === true,
+                            syncWebDAVStorageConfig: remoteConfig.syncWebDAVStorageConfig === true,
+                        },
+                    };
+                }),
+            failUserModelConfigLoad: (userId, loadVersion) =>
+                set((state) => state.modelConfigOwnerId === userId && state.modelConfigLoadVersion === loadVersion && !state.isModelConfigReady ? { modelConfigLoadFailed: true } : state),
             loadPublicSettings: async () => {
                 if (get().isPublicSettingsLoading) return;
                 set({ isPublicSettingsLoading: true });
@@ -335,63 +409,69 @@ export const useConfigStore = create<ConfigStore>()(
                     set({ isPublicSettingsLoading: false });
                 }
             },
-            isAiConfigReady: (config, model) => isAiConfigReady(config, model),
+            isAiConfigReady: (config, model) => {
+                const state = get();
+                const session = useUserStore.getState();
+                return isModelConfigReadyForSession(state.modelConfigOwnerId, state.isModelConfigReady, session.token, session.user?.id, session.isReady)
+                    && hasCompleteAiConfig(config, model);
+            },
             openConfigDialog: (shouldPromptContinue = false) => set({ isConfigOpen: true, shouldPromptContinue }),
             setConfigDialogOpen: (isConfigOpen) => set({ isConfigOpen }),
             clearPromptContinue: () => set({ shouldPromptContinue: false }),
         }),
         {
             name: CONFIG_STORE_KEY,
-            partialize: (state) => ({ config: state.config }),
+            partialize: (state) => ({
+                config: configForBrowserStorage(state.modelConfigOwnerId ? state.anonymousConfig : state.config),
+            }),
             merge: (persisted, current) => {
                 const persistedState = (persisted || {}) as Partial<ConfigStore>;
                 const persistedConfig = (persistedState.config || {}) as Partial<AiConfig>;
                 const config = { ...defaultConfig, ...persistedConfig };
                 const localChannels = normalizeLocalChannels(config);
-                const localModels = normalizeModelList(localChannels.flatMap((channel) => channel.models));
-                return {
-                    ...current,
-                    config: {
-                        ...config,
-                        localChannels,
-                        models: localModels,
-                        baseUrl: localChannels[0]?.baseUrl || config.baseUrl,
-                        apiKey: localChannels[0]?.apiKey || config.apiKey,
-                        imageChannelId: config.imageChannelId || localChannels[0]?.id || "",
-                        videoChannelId: config.videoChannelId || localChannels[0]?.id || "",
-                        textChannelId: config.textChannelId || localChannels[0]?.id || "",
-                        audioChannelId: config.audioChannelId || localChannels[0]?.id || "",
-                        activeChannelId: config.activeChannelId || "",
-                        syncStorageConfig: config.syncStorageConfig === true,
-                        syncWebDAVStorageConfig: config.syncWebDAVStorageConfig === true,
-                        channelMode: config.channelMode || "remote",
-                        imageModel: config.imageModel || config.model,
-                        videoModel: config.videoModel || "grok-imagine-video",
-                        textModel: config.textModel || config.model,
-                        audioModel: config.audioModel || defaultConfig.audioModel,
-                        audioVoice: config.audioVoice || defaultConfig.audioVoice,
-                        audioFormat: config.audioFormat || defaultConfig.audioFormat,
-                        audioSpeed: config.audioSpeed || defaultConfig.audioSpeed,
-                        systemPrompts: config.systemPrompts?.image ? config.systemPrompts : defaultConfig.systemPrompts,
-                        audioInstructions: config.audioInstructions || "",
-                        videoSeconds: config.videoSeconds || "6",
-                        videoMode: config.videoMode || "std",
-                        videoNegativePrompt: config.videoNegativePrompt || "",
-                        videoMultiShot: config.videoMultiShot || "false",
-                        videoShotType: config.videoShotType || "intelligence",
-                        videoMultiPrompt: Array.isArray(config.videoMultiPrompt) && config.videoMultiPrompt.length ? config.videoMultiPrompt : defaultConfig.videoMultiPrompt,
-                        videoElementList: Array.isArray(config.videoElementList) && config.videoElementList.length ? config.videoElementList : defaultConfig.videoElementList,
-                        vquality: config.vquality || "720",
-                        videoGenerateAudio: config.videoGenerateAudio || "false",
-                        videoWatermark: config.videoWatermark || "false",
-                        videoCharacterOrientation: config.videoCharacterOrientation === "image" ? "image" : "video",
-                        canvasImageCount: config.canvasImageCount || "1",
-                        imageModels: filterModelsByCapability(localModels, "image"),
-                        videoModels: filterModelsByCapability(localModels, "video"),
-                        textModels: filterModelsByCapability(localModels, "text"),
-                        audioModels: filterModelsByCapability(localModels, "audio"),
-                    },
+                const localModels = normalizeModelList(config.models);
+                const restoredConfig: AiConfig = {
+                    ...config,
+                    localChannels,
+                    models: localModels,
+                    baseUrl: "",
+                    apiKey: "",
+                    publicChannels: [],
+                    imageChannelId: config.imageChannelId || localChannels[0]?.id || "",
+                    videoChannelId: config.videoChannelId || localChannels[0]?.id || "",
+                    textChannelId: config.textChannelId || localChannels[0]?.id || "",
+                    audioChannelId: config.audioChannelId || localChannels[0]?.id || "",
+                    activeChannelId: config.activeChannelId || "",
+                    syncStorageConfig: config.syncStorageConfig === true,
+                    syncWebDAVStorageConfig: config.syncWebDAVStorageConfig === true,
+                    channelMode: config.channelMode || "remote",
+                    imageModel: config.imageModel || config.model,
+                    videoModel: config.videoModel || "grok-imagine-video",
+                    textModel: config.textModel || config.model,
+                    audioModel: config.audioModel || defaultConfig.audioModel,
+                    audioVoice: config.audioVoice || defaultConfig.audioVoice,
+                    audioFormat: config.audioFormat || defaultConfig.audioFormat,
+                    audioSpeed: config.audioSpeed || defaultConfig.audioSpeed,
+                    systemPrompts: { ...defaultConfig.systemPrompts, ...(config.systemPrompts || {}) },
+                    audioInstructions: config.audioInstructions || "",
+                    videoSeconds: config.videoSeconds || "6",
+                    videoMode: config.videoMode || "std",
+                    videoNegativePrompt: config.videoNegativePrompt || "",
+                    videoMultiShot: config.videoMultiShot || "false",
+                    videoShotType: config.videoShotType || "intelligence",
+                    videoMultiPrompt: Array.isArray(config.videoMultiPrompt) && config.videoMultiPrompt.length ? config.videoMultiPrompt : defaultConfig.videoMultiPrompt,
+                    videoElementList: Array.isArray(config.videoElementList) && config.videoElementList.length ? config.videoElementList : defaultConfig.videoElementList,
+                    vquality: config.vquality || "720",
+                    videoGenerateAudio: config.videoGenerateAudio || "false",
+                    videoWatermark: config.videoWatermark || "false",
+                    videoCharacterOrientation: config.videoCharacterOrientation === "image" ? "image" : "video",
+                    canvasImageCount: config.canvasImageCount || "1",
+                    imageModels: filterModelsByCapability(localModels, "image"),
+                    videoModels: filterModelsByCapability(localModels, "video"),
+                    textModels: filterModelsByCapability(localModels, "text"),
+                    audioModels: filterModelsByCapability(localModels, "audio"),
                 };
+                return { ...current, modelConfigOwnerId: "", isModelConfigReady: true, modelConfigLoadFailed: false, modelConfigLoadVersion: 0, anonymousConfig: restoredConfig, config: restoredConfig };
             },
         },
     ),
@@ -403,11 +483,23 @@ function normalizeModelList(models: string[]) {
 
 export function useEffectiveConfig() {
     const config = useConfigStore((state) => state.config);
+    const isCurrentModelConfigReady = useIsModelConfigReady();
     const modelChannel = useConfigStore((state) => state.publicSettings?.modelChannel || null);
     const token = useUserStore((state) => state.token);
     const user = useUserStore((state) => state.user);
     const canUseRemoteChannel = Boolean(token && user && (user.role === "admin" || modelChannel?.allowUserRemoteChannel === true));
-    return useMemo(() => resolveEffectiveConfig(config, modelChannel, canUseRemoteChannel), [canUseRemoteChannel, config, modelChannel]);
+    const canUsePersonalChannel = modelChannel?.allowCustomChannel === true;
+    const sourceConfig = isCurrentModelConfigReady ? config : defaultConfig;
+    return useMemo(() => resolveEffectiveConfig(sourceConfig, modelChannel, canUseRemoteChannel, canUsePersonalChannel), [canUsePersonalChannel, canUseRemoteChannel, modelChannel, sourceConfig]);
+}
+
+export function useIsModelConfigReady() {
+    const modelConfigOwnerId = useConfigStore((state) => state.modelConfigOwnerId);
+    const isModelConfigReady = useConfigStore((state) => state.isModelConfigReady);
+    const token = useUserStore((state) => state.token);
+    const userId = useUserStore((state) => state.user?.id);
+    const isUserReady = useUserStore((state) => state.isReady);
+    return isModelConfigReadyForSession(modelConfigOwnerId, isModelConfigReady, token, userId, isUserReady);
 }
 
 export function buildApiUrl(baseUrl: string, path: string) {
@@ -438,34 +530,51 @@ function normalizeArkPlanBaseUrl(baseUrl: string) {
 
 export function normalizeLocalChannels(config: Partial<AiConfig>) {
     const channels = Array.isArray(config.localChannels) ? config.localChannels : [];
-    const normalized = channels.map((channel, index) => ({
-        id: channel.id || `local-${index + 1}`,
-        name: typeof channel.name === "string" ? channel.name : `本地渠道 ${index + 1}`,
-        baseUrl: channel.baseUrl || "",
-        apiKey: channel.apiKey || "",
-        models: Array.isArray(channel.models) ? channel.models.filter(Boolean) : [],
-    }));
-    if (!normalized.length) {
-        normalized.push({ id: "local-default", name: "本地直连", baseUrl: config.baseUrl || defaultConfig.baseUrl, apiKey: config.apiKey || "", models: Array.isArray(config.models) ? config.models.filter(Boolean) : [] });
-    }
-    return normalized;
+    return channels.map((channel, index) => {
+        const legacy = channel as LocalModelChannel & { systemChannelId?: string };
+        const systemChannelId = legacy.systemChannelId || channel.id || `local-${index + 1}`;
+        return {
+            id: channel.id || systemChannelId,
+            systemChannelId,
+            apiKey: channel.apiKey || "",
+            models: Array.isArray(channel.models) ? channel.models.filter(Boolean) : [],
+        };
+    });
+}
+
+function configForBrowserStorage(config: AiConfig): AiConfig {
+    return {
+        ...config,
+        localChannels: normalizeLocalChannels(config),
+        baseUrl: "",
+        apiKey: "",
+        publicChannels: [],
+    };
 }
 
 export function channelIdForActiveModel(config: AiConfig) {
-    if (modelMatchesCapability(config.model, "image") && config.imageChannelId) return config.imageChannelId;
-    if (modelMatchesCapability(config.model, "video") && config.videoChannelId) return config.videoChannelId;
-    if (modelMatchesCapability(config.model, "audio") && config.audioChannelId) return config.audioChannelId;
-    if (modelMatchesCapability(config.model, "text") && config.textChannelId) return config.textChannelId;
-    if (config.activeChannelId) return config.activeChannelId;
-    if (config.model === config.videoModel) return config.videoChannelId;
-    if (config.model === config.textModel) return config.textChannelId;
-    if (config.model === config.audioModel) return config.audioChannelId;
-    return config.imageChannelId;
+    let preferredId = config.activeChannelId;
+    if (modelMatchesCapability(config.model, "image")) preferredId = config.imageChannelId;
+    else if (modelMatchesCapability(config.model, "video")) preferredId = config.videoChannelId;
+    else if (modelMatchesCapability(config.model, "audio")) preferredId = config.audioChannelId;
+    else if (modelMatchesCapability(config.model, "text")) preferredId = config.textChannelId;
+    return channelIdForModel(config, config.model, preferredId);
 }
 
 export function localChannelForActiveModel(config: AiConfig) {
-    const channels = normalizeLocalChannels(config);
-    const preferredId = channelIdForActiveModel(config);
-    return channels.find((channel) => channel.id === preferredId && channel.models.includes(config.model)) || channels.find((channel) => channel.models.includes(config.model)) || channels.find((channel) => channel.id === preferredId) || channels[0];
+    const channelId = channelIdForActiveModel(config);
+    const systemChannel = config.publicChannels.find((channel) => channel.id === channelId && channel.models.includes(config.model));
+    if (!systemChannel) return undefined;
+    const personalChannel = normalizeLocalChannels(config).find((channel) => channel.systemChannelId === systemChannel.id);
+    return {
+        ...systemChannel,
+        apiKey: personalChannel?.apiKey || "",
+    };
+}
+
+function channelIdForModel(config: AiConfig, model: string, preferredId: string) {
+    if (!model) return "";
+    if (preferredId && config.publicChannels.some((channel) => channel.id === preferredId && channel.models.includes(model))) return preferredId;
+    return config.publicChannels.find((channel) => channel.models.includes(model))?.id || "";
 }
 

@@ -31,14 +31,24 @@ func DraftCreativeWorkflow(ctx context.Context, request WorkflowAgentDraftReques
 	if request.ChannelMode != "local" && !UserCanUseRemoteModelChannel(user) {
 		return WorkflowAgentDraftResponse{}, safeMessageError{message: "当前账号未开放云端渠道"}
 	}
-	channel, err := workflowDraftChannel(request, modelName)
+	if request.ChannelMode != "local" && user.Role != model.UserRoleAdmin {
+		available, err := PublicModelAvailable(modelName)
+		if err != nil {
+			return WorkflowAgentDraftResponse{}, err
+		}
+		if !available {
+			return WorkflowAgentDraftResponse{}, safeMessageError{message: "当前账号未开放该模型"}
+		}
+	}
+	channel, err := workflowDraftChannel(user.ID, request, modelName)
 	if err != nil {
 		return WorkflowAgentDraftResponse{}, err
 	}
 
-	credits, _ := ModelCost(modelName)
+	credits := 0
 	chargedCredits := request.ChannelMode != "local"
 	if chargedCredits {
+		credits, _ = ModelCost(modelName)
 		if err := ConsumeUserCredits(user.ID, modelName, credits, "/workflows/agent-draft"); err != nil {
 			return WorkflowAgentDraftResponse{}, err
 		}
@@ -175,23 +185,15 @@ func workflowDraftModel(modelName string) (string, error) {
 	return "", safeMessageError{message: "请先配置文本模型"}
 }
 
-func workflowDraftChannel(request WorkflowAgentDraftRequest, modelName string) (model.ModelChannel, error) {
+func workflowDraftChannel(userID string, request WorkflowAgentDraftRequest, modelName string) (model.ModelChannel, error) {
 	if request.ChannelMode == "local" {
-		channel := model.ModelChannel{
-			ID:       strings.TrimSpace(request.ChannelID),
-			Name:     "用户本地直连",
-			BaseURL:  strings.TrimSpace(request.BaseURL),
-			APIKey:   strings.TrimSpace(request.APIKey),
-			Models:   []string{modelName},
-			Weight:   1,
-			Timeout:  600,
-		}
-		if channel.BaseURL == "" || channel.APIKey == "" {
-			return model.ModelChannel{}, safeMessageError{message: "文本模型本地直连渠道配置不完整"}
+		channel, err := SelectUserLocalModelChannelForModel(userID, modelName, request.ChannelID)
+		if err != nil {
+			return model.ModelChannel{}, safeMessageError{message: err.Error()}
 		}
 		return channel, nil
 	}
-	return SelectModelChannel(modelName)
+	return SelectModelChannelForModel(modelName, request.ChannelID)
 }
 
 func workflowAgentMessages(prompt string, references []string) []map[string]any {

@@ -139,8 +139,10 @@ export async function pollCanvasAudioTaskStatus(taskId: string): Promise<CanvasA
 
 function assertAudioConfig(config: AiConfig, model: string) {
     if (!model) throw new Error("请先配置音频模型");
-    if (config.channelMode === "local" && !config.baseUrl.trim()) throw new Error("请先配置 Base URL");
-    if (config.channelMode === "local" && !config.apiKey.trim()) throw new Error("请先配置 API Key");
+    if (config.channelMode !== "local") return;
+    const channel = localChannelForActiveModel({ ...config, model });
+    if (!channel?.baseUrl.trim()) throw new Error("当前音频模型缺少可用渠道");
+    if (!channel.apiKey.trim()) throw new Error("请先填写当前渠道的 API Key");
 }
 
 async function assertAudioBlob(blob: Blob) {

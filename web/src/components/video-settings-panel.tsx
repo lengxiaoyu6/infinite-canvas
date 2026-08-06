@@ -7,7 +7,7 @@ import { ImageSettingsTheme } from "@/components/image-settings-panel";
 import { boolConfig, isSeedanceFastOrMiniModel, isSeedanceVideoConfig, normalizeSeedanceDuration, normalizeSeedanceRatio, normalizeSeedanceResolution, seedanceDurationOptions, seedancePixelLabel, seedanceRatioOptions, seedanceResolutionOptions } from "@/lib/seedance-video";
 import { type CanvasTheme } from "@/lib/canvas-theme";
 import { modelKey, supportsVideoAudioGeneration } from "@/lib/video-model-capabilities";
-import { channelIdForActiveModel, localChannelForActiveModel, type AiConfig } from "@/stores/use-config-store";
+import { channelIdForActiveModel, type AiConfig } from "@/stores/use-config-store";
 
 const resolutionOptions = [
     { value: "720", label: "720p" },
@@ -468,10 +468,8 @@ function isProviderKlingConfig(config: AiConfig, modelName: string, key: string,
     if (modelKey(model) !== key) return false;
     const scopedConfig = { ...config, model, videoModel: model };
     const channelId = channelIdForActiveModel(scopedConfig);
-    const channels = config.channelMode === "remote" ? config.publicChannels : [localChannelForActiveModel(scopedConfig)];
-    const channel = channels.find((item) => (item?.id || "") === channelId) || channels[0];
-    const record = channel as { id?: string; name?: string; baseUrl?: string; remark?: string } | undefined;
-    const text = [record?.id, record?.name, record?.baseUrl, record?.remark].filter(Boolean).join(" ").toLowerCase();
+    const channel = config.publicChannels.find((item) => item.id === channelId) || config.publicChannels[0];
+    const text = [channel?.id, channel?.protocol, channel?.name, channel?.baseUrl, channel?.remark].filter(Boolean).join(" ").toLowerCase();
     return text.includes(provider);
 }
 
@@ -508,7 +506,6 @@ export function isKIEGrokVideoModel(config: AiConfig, modelName: string) {
     if (model !== "grok-imagine/text-to-video" && model !== "grok-imagine/image-to-video") return false;
     const scopedConfig = { ...config, model, videoModel: model };
     const channelId = channelIdForActiveModel(scopedConfig);
-    const channels = config.channelMode === "remote" ? config.publicChannels : [localChannelForActiveModel(scopedConfig)];
-    const channel = channels.find((item) => (item?.id || "") === channelId) || channels[0];
-    return ((channel as { baseUrl?: string } | undefined)?.baseUrl || "").toLowerCase().includes("kie");
+    const channel = config.publicChannels.find((item) => item.id === channelId) || config.publicChannels[0];
+    return channel?.protocol === "kie" || channel?.baseUrl.toLowerCase().includes("kie") === true;
 }

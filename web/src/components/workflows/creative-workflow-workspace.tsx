@@ -16,7 +16,7 @@ import { createCanvasImageTask, requestEdit, requestGeneration, requestImageQues
 import { saveImageGenerationLogs } from "@/services/api/generation-logs";
 import { deleteUserWorkflow, draftUserWorkflow, fetchUserConfig, fetchUserWorkflows, saveUserWorkflow, type CreativeWorkflowRecord } from "@/services/api/user-config";
 import { deleteStoredImages, imageToDataUrl, uploadImage } from "@/services/image-storage";
-import { defaultConfig, localChannelForActiveModel, normalizeLocalChannels, useConfigStore, useEffectiveConfig, type AiConfig } from "@/stores/use-config-store";
+import { defaultConfig, localChannelForActiveModel, useConfigStore, useEffectiveConfig, type AiConfig } from "@/stores/use-config-store";
 import { useThemeStore } from "@/stores/use-theme-store";
 import { useUserStore } from "@/stores/use-user-store";
 import type { ReferenceImage } from "@/types/image";
@@ -547,7 +547,6 @@ export function CreativeWorkflowWorkspace({
                 openConfigDialog(true);
                 return;
             }
-            const localChannel = effectiveConfig.channelMode === "local" ? localChannelForActiveModel(textConfig) : null;
             const referenceDataUrls = await Promise.all(agentReferences.map((image) => imageToDataUrl(image)));
             const result = await draftUserWorkflow<Partial<CreativeWorkflow>>(token, {
                 prompt: text,
@@ -555,8 +554,6 @@ export function CreativeWorkflowWorkspace({
                 model: textModel,
                 channelId: textChannelId,
                 channelMode: effectiveConfig.channelMode,
-                baseUrl: localChannel?.baseUrl,
-                apiKey: localChannel?.apiKey,
                 references: referenceDataUrls.filter(Boolean),
             });
             setAgentDraft(normalizeAgentDraft(result.draft, effectiveConfig, agentScope));
@@ -1806,7 +1803,7 @@ function describeModelSelection(config: AiConfig, modelName: string, channelId: 
     const selectedModel = modelName || "未选择模型";
     if (config.channelMode === "local") {
         const channel = localChannelForActiveModel({ ...config, model: selectedModel, activeChannelId: channelId });
-        return { channelName: channel?.name || "本地直连", modelName: selectedModel };
+        return { channelName: channel?.name || "个人 API Key", modelName: selectedModel };
     }
     const channel =
         config.publicChannels.find((item) => item.id === channelId && item.models?.includes(selectedModel)) ||
@@ -2006,9 +2003,7 @@ function resolveWorkflowRuntime(workflow: CreativeWorkflow, baseConfig: AiConfig
 }
 
 function resolveWorkflowImageChannelId(config: AiConfig, model: string, ...preferredIds: Array<string | undefined>) {
-    const channels = config.channelMode === "remote"
-        ? config.publicChannels.map((channel) => ({ id: channel.id || "", models: channel.models || [] }))
-        : normalizeLocalChannels(config).map((channel) => ({ id: channel.id, models: channel.models }));
+    const channels = config.publicChannels.map((channel) => ({ id: channel.id, models: channel.models }));
     for (const id of preferredIds) {
         const channelId = (id || "").trim();
         if (channelId && channels.some((channel) => channel.id === channelId && channel.models.includes(model))) return channelId;

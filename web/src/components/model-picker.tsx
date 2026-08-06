@@ -5,7 +5,7 @@ import { Cpu } from "lucide-react";
 
 import { Select, SelectContent, SelectItem, SelectTrigger } from "@/components/ui/select";
 import { cn } from "@/lib/utils";
-import { filterModelsByCapability, normalizeLocalChannels, type AiConfig, type ModelCapability } from "@/stores/use-config-store";
+import { filterModelsByCapability, type AiConfig, type ModelCapability } from "@/stores/use-config-store";
 
 type ModelPickerProps = {
     config: AiConfig;
@@ -23,10 +23,7 @@ export function ModelPicker({ config, value, channelId, capability, onChange, cl
     const pickerId = useId();
     const [open, setOpen] = useState(false);
     const channelOptions = useMemo(() => {
-        const channels =
-            config.channelMode === "remote"
-                ? config.publicChannels.map((channel) => ({ id: channel.id, name: channel.name || "云端渠道", baseUrl: channel.baseUrl, models: channel.models }))
-                : normalizeLocalChannels(config).map((channel) => ({ id: channel.id, name: channel.name || "本地渠道", baseUrl: channel.baseUrl, models: channel.models }));
+        const channels = config.publicChannels.map((channel) => ({ id: channel.id, name: channel.name || "模型渠道", models: channel.models }));
         const models = channels.flatMap((channel) => (channel.models ?? []).map((model) => ({ key: `${channel.id}::${model}`, channelId: channel.id, channelName: channel.name, model })));
         if (!capability) return models;
         return models.filter((item) => filterModelsByCapability([item.model], capability).length > 0);
@@ -100,7 +97,7 @@ export function ModelPicker({ config, value, channelId, capability, onChange, cl
                     ))
                 ) : (
                     <SelectItem value="__empty__" disabled>
-                        {config.channelMode === "remote" ? "暂无可用模型" : "请先到配置里拉取模型列表"}
+                        暂无可用模型
                     </SelectItem>
                 )}
             </SelectContent>
