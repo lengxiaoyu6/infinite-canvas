@@ -128,13 +128,33 @@ func StorageObjectInfo(id string) (model.StorageObject, error) {
 	return EnsureStorageObjectPublicURL(id)
 }
 
+func isProjectFileContentURL(value string) bool {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return false
+	}
+	parsed, err := url.Parse(value)
+	if err != nil {
+		return false
+	}
+	pathValue := strings.TrimRight(parsed.Path, "/")
+	if parsed.Scheme == "" && parsed.Host == "" {
+		pathValue = strings.TrimSpace(value)
+		if !strings.HasPrefix(pathValue, "/") {
+			pathValue = "/" + pathValue
+		}
+		pathValue = strings.TrimRight(pathValue, "/")
+	}
+	return strings.HasPrefix(pathValue, "/api/files/") && strings.HasSuffix(pathValue, "/content")
+}
+
 // EnsureStorageObjectPublicURL 为已保存的 WebDAV 对象补齐森络盘直链。
 func EnsureStorageObjectPublicURL(id string) (model.StorageObject, error) {
 	object, err := repository.GetStorageObject(id)
 	if err != nil {
 		return model.StorageObject{}, err
 	}
-	if strings.TrimSpace(object.PublicURL) != "" {
+	if publicURL := strings.TrimSpace(object.PublicURL); publicURL != "" && !isProjectFileContentURL(publicURL) {
 		return object, nil
 	}
 	provider, ok := storageProviderForSavedObject(object)
@@ -545,8 +565,15 @@ func DownloadStorageObject(id string) (DownloadedStorageObject, error) {
 		}
 	}
 
-	if object.PublicURL != "" {
-		request, err := http.NewRequest(http.MethodGet, object.PublicURL, nil)
+	publicURL := strings.TrimSpace(object.PublicURL)
+	if publicURL == "" || isProjectFileContentURL(publicURL) {
+		if refreshed, refreshErr := EnsureStorageObjectPublicURL(id); refreshErr == nil {
+			object = refreshed
+			publicURL = strings.TrimSpace(refreshed.PublicURL)
+		}
+	}
+	if publicURL != "" && !isProjectFileContentURL(publicURL) {
+		request, err := http.NewRequest(http.MethodGet, publicURL, nil)
 		if err != nil {
 			return DownloadedStorageObject{}, err
 		}
@@ -992,12 +1019,13 @@ func validateUserStorageProviderTypes(providers UserStorageProviders) error {
 }
 
 func findStorageProviderForObject(object model.StorageObject, providers []model.StorageProvider) (model.StorageProvider, bool) {
+	publicURL := strings.TrimSpace(object.PublicURL)
 	for _, provider := range providers {
 		if object.ProviderID != "" && provider.ID == object.ProviderID {
 			return provider, true
 		}
 		if object.Bucket != "" && provider.Bucket == object.Bucket {
-			if object.PublicURL == "" || provider.PublicBaseURL == "" || strings.HasPrefix(object.PublicURL, strings.TrimRight(provider.PublicBaseURL, "/")+"/") {
+			if publicURL == "" || isProjectFileContentURL(publicURL) || provider.PublicBaseURL == "" || strings.HasPrefix(publicURL, strings.TrimRight(provider.PublicBaseURL, "/")+"/") {
 				return provider, true
 			}
 		}
