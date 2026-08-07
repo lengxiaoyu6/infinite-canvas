@@ -125,7 +125,46 @@ func PublicStorageConfig() (model.PublicStorageSetting, error) {
 
 // StorageObjectInfo 获取存储对象元数据。
 func StorageObjectInfo(id string) (model.StorageObject, error) {
-	return repository.GetStorageObject(id)
+	return EnsureStorageObjectPublicURL(id)
+}
+
+// EnsureStorageObjectPublicURL 为已保存的 WebDAV 对象补齐森络盘直链。
+func EnsureStorageObjectPublicURL(id string) (model.StorageObject, error) {
+	object, err := repository.GetStorageObject(id)
+	if err != nil {
+		return model.StorageObject{}, err
+	}
+	if strings.TrimSpace(object.PublicURL) != "" {
+		return object, nil
+	}
+	provider, ok := storageProviderForSavedObject(object)
+	if !ok || provider.Type != model.StorageProviderTypeWebDAV || !senluopanProviderConfigured(provider) {
+		return object, nil
+	}
+	link, linkID, err := createSenluopanDirectLink(provider, object.ObjectKey)
+	if err != nil {
+		log.Printf("senluopan direct link ensure failed provider=%s object=%s err=%v", provider.Name, object.ObjectKey, err)
+		return object, nil
+	}
+	object.PublicURL = link
+	object.DirectLinkID = linkID
+	if err := repository.UpdateStorageObjectPublicLink(object.ID, link, linkID); err != nil {
+		return object, err
+	}
+	return object, nil
+}
+
+func storageProviderForSavedObject(object model.StorageObject) (model.StorageProvider, bool) {
+	providers := []model.StorageProvider{}
+	if object.CreatedBy != "" && object.CreatedBy != "anonymous" {
+		if config, found, err := repository.GetUserConfig(object.CreatedBy); err == nil && found {
+			providers = append(providers, userStorageProvidersForOwner(config.StorageProvider, object.CreatedBy)...)
+		}
+	}
+	if settings, err := repository.GetSettings(); err == nil {
+		providers = append(providers, normalizePrivateStorageSetting(settings.Private.Storage).Providers...)
+	}
+	return findStorageProviderForObject(object, providers)
 }
 
 // SaveCurrentUserStorageProvider 保存用户配置的存储提供商。

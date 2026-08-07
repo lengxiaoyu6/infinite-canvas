@@ -3,9 +3,9 @@ package service
 import (
 	"strings"
 
+	"github.com/google/uuid"
 	"github.com/tigerowo/infinite-canvas/model"
 	"github.com/tigerowo/infinite-canvas/repository"
-	"github.com/google/uuid"
 )
 
 type CanvasImageTaskCreateInput struct {
@@ -94,6 +94,7 @@ func SaveCanvasImageTask(task model.CanvasImageTask) (model.CanvasImageTask, err
 }
 
 func CanvasImageTaskResponse(task model.CanvasImageTask) map[string]any {
+	imageURL := canvasImageTaskURL(task)
 	result := map[string]any{
 		"id":             task.ID,
 		"object":         "canvas.image.task",
@@ -112,9 +113,9 @@ func CanvasImageTaskResponse(task model.CanvasImageTask) map[string]any {
 		"createdAt":      task.CreatedAt,
 		"updatedAt":      task.UpdatedAt,
 	}
-	if task.ImageURL != "" {
-		result["url"] = task.ImageURL
-		result["image_url"] = task.ImageURL
+	if imageURL != "" {
+		result["url"] = imageURL
+		result["image_url"] = imageURL
 		result["storageKey"] = task.StorageKey
 		result["width"] = task.Width
 		result["height"] = task.Height
@@ -126,6 +127,18 @@ func CanvasImageTaskResponse(task model.CanvasImageTask) map[string]any {
 		result["error_detail"] = task.ErrorDetail
 	}
 	return result
+}
+
+func canvasImageTaskURL(task model.CanvasImageTask) string {
+	if !strings.HasPrefix(task.StorageKey, "server:") {
+		return task.ImageURL
+	}
+	objectID := strings.TrimPrefix(task.StorageKey, "server:")
+	object, err := EnsureStorageObjectPublicURL(objectID)
+	if err == nil && strings.TrimSpace(object.PublicURL) != "" {
+		return object.PublicURL
+	}
+	return task.ImageURL
 }
 
 func normalizeCanvasImageTaskSource(source string) string {
@@ -153,4 +166,3 @@ func normalizeCanvasImageTaskSources(sources []string) []string {
 	}
 	return result
 }
-

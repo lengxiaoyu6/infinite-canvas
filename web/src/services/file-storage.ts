@@ -4,7 +4,7 @@ import localforage from "localforage";
 import { nanoid } from "nanoid";
 
 import { apiGet } from "@/services/api/request";
-import { canUseGlobalStorage, getProxyUrl, loadUserStorageProvider, toProviderPayload, type StorageConfig } from "@/services/image-storage";
+import { canUseGlobalStorage, getProxyUrl, isProjectFileContentUrl, loadUserStorageProvider, toProviderPayload, type StorageConfig } from "@/services/image-storage";
 import { useUserStore } from "@/stores/use-user-store";
 
 export type UploadedFile = { url: string; storageKey: string; bytes: number; mimeType: string; width?: number; height?: number; durationMs?: number };
@@ -96,10 +96,10 @@ export async function resolveMediaUrl(storageKey?: string, fallback = "") {
     }
     if (storageKey.startsWith("server:")) {
         const id = storageKey.slice("server:".length);
-        if (fallback && !fallback.startsWith("blob:")) return fallback;
+        if (fallback && !fallback.startsWith("blob:") && !isProjectFileContentUrl(fallback)) return fallback;
         const info = await apiGet<{ publicUrl?: string }>(`/api/files/${encodeURIComponent(id)}`).catch(() => null);
         if (!info) return fallback;
-        const url = info?.publicUrl || `/api/files/${encodeURIComponent(id)}/content`;
+        const url = info?.publicUrl || fallback || `/api/files/${encodeURIComponent(id)}/content`;
         return url;
     }
     return fallback;

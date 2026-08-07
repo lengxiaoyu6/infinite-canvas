@@ -158,6 +158,19 @@ function publicImageUrl(value: string) {
     }
 }
 
+export function isProjectFileContentUrl(value: string) {
+    if (!value || value.startsWith("blob:") || value.startsWith("data:")) return false;
+    try {
+        const candidate = getProxyImageSourceUrl(value) || value;
+        const base = typeof window === "undefined" ? "http://localhost" : window.location.origin;
+        const parsed = new URL(candidate, base);
+        const baseOrigin = new URL(base).origin;
+        return parsed.origin === baseOrigin && parsed.pathname.startsWith("/api/files/") && parsed.pathname.endsWith("/content");
+    } catch {
+        return false;
+    }
+}
+
 async function fetchImageBlob(url: string, fallbackMessage: string) {
     let lastError = "";
     for (const requestUrl of getImageRequestUrls(url)) {
@@ -236,10 +249,10 @@ export async function resolveImageUrl(storageKey?: string, fallback = "") {
             return url;
         }
         const cachedUrl = serverUrls.get(id);
-        if (cachedUrl) return cachedUrl;
+        if (cachedUrl && !isProjectFileContentUrl(cachedUrl)) return cachedUrl;
         const info = await apiGet<{ publicUrl?: string }>(`/api/files/${encodeURIComponent(id)}`).catch(() => null);
-        if (!info) return fallback;
-        const url = info?.publicUrl || `/api/files/${encodeURIComponent(id)}/content`;
+        if (!info) return cachedUrl || fallback;
+        const url = info?.publicUrl || cachedUrl || `/api/files/${encodeURIComponent(id)}/content`;
         serverUrls.set(id, url);
         return url;
     }

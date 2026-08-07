@@ -13,6 +13,17 @@ func SaveStorageObject(object model.StorageObject) (model.StorageObject, error) 
 	return object, db.Save(&object).Error
 }
 
+// UpdateStorageObjectPublicLink 更新存储对象公开地址。
+func UpdateStorageObjectPublicLink(id string, publicURL string, directLinkID string) error {
+	db, err := DB()
+	if err != nil {
+		return err
+	}
+	return db.Model(&model.StorageObject{}).
+		Where("id = ?", id).
+		Updates(map[string]any{"public_url": publicURL, "direct_link_id": directLinkID}).Error
+}
+
 // GetStorageObject 根据 ID 获取存储对象。
 func GetStorageObject(id string) (model.StorageObject, error) {
 	db, err := DB()
