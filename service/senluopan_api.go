@@ -115,19 +115,13 @@ func requestSenluopanDirectLinkResult(provider model.StorageProvider, objectKey 
 		return "", "", errors.New("森络盘 API 配置不完整")
 	}
 
-	// 修复：从 objectKey 中移除 PathPrefix，因为森络盘 WebDAV 的根目录
-	// 可能已经指向了 PathPrefix 对应的目录
-	pathPrefix := strings.Trim(strings.TrimSpace(provider.PathPrefix), "/")
-	relativePath := objectKey
-	if pathPrefix != "" && strings.HasPrefix(objectKey, pathPrefix+"/") {
-		// 移除 pathPrefix 前缀
-		relativePath = strings.TrimPrefix(objectKey, pathPrefix+"/")
-		log.Printf("[DEBUG] senluopan path conversion: objectKey=%s pathPrefix=%s relativePath=%s", objectKey, pathPrefix, relativePath)
-	} else {
-		log.Printf("[DEBUG] senluopan path no conversion: objectKey=%s pathPrefix=%s", objectKey, pathPrefix)
-	}
+	// Cloudreve 的 WebDAV 固定挂载在 /dav，端点 path 去掉 /dav 挂载段后剩余的部分，
+	// 对应 cloudreve://my/ 下的真实目录前缀。端点只有 /dav 时，使用远程目录作为该前缀。
+	// 例如端点 https://host/dav + 远程目录 canvas + objectKey canvas/user-x/... => my/canvas/canvas/user-x/...
+	davPrefix, relativePath := senluopanCloudrevePath(provider, objectKey)
+	log.Printf("[DEBUG] senluopan path: endpoint=%s davPrefix=%s objectKey=%s relativePath=%s", provider.Endpoint, davPrefix, objectKey, relativePath)
 
-	fileURL := url.URL{Scheme: "cloudreve", Host: "my", Path: "/" + strings.TrimLeft(relativePath, "/")}
+	fileURL := url.URL{Scheme: "cloudreve", Host: "my", Path: "/" + relativePath}
 	log.Printf("[DEBUG] senluopan cloudreve URI: %s", fileURL.String())
 	body, err := json.Marshal(map[string][]string{"uris": {fileURL.String()}})
 	if err != nil {
@@ -177,6 +171,34 @@ func requestSenluopanDirectLinkResult(provider model.StorageProvider, objectKey 
 		return "", "", errors.New("森络盘创建直链未返回直链 ID")
 	}
 	return link, segments[1], nil
+}
+
+// senluopanCloudrevePrefix 从 WebDAV 端点 URL 解析出 cloudreve://my/ 下的目录前缀。
+// Cloudreve 的 WebDAV 挂载在 /dav，去掉该挂载段后剩余的路径段即为 my/ 下的真实目录。
+// 例如 https://www.senluopan.com/dav/canvas => "canvas"；https://host/dav => ""。
+func senluopanCloudrevePrefix(endpoint string) string {
+	parsed, err := url.Parse(strings.TrimSpace(endpoint))
+	if err != nil {
+		return ""
+	}
+	trimmed := strings.Trim(parsed.Path, "/")
+	if trimmed == "" {
+		return ""
+	}
+	segments := strings.Split(trimmed, "/")
+	if strings.EqualFold(segments[0], "dav") {
+		segments = segments[1:]
+	}
+	return strings.Join(segments, "/")
+}
+
+func senluopanCloudrevePath(provider model.StorageProvider, objectKey string) (string, string) {
+	davPrefix := senluopanCloudrevePrefix(provider.Endpoint)
+	if davPrefix == "" {
+		davPrefix = strings.Trim(provider.PathPrefix, "/")
+	}
+	relativePath := strings.Trim(davPrefix+"/"+strings.TrimLeft(objectKey, "/"), "/")
+	return davPrefix, relativePath
 }
 
 func deleteSenluopanDirectLink(provider model.StorageProvider, directLinkID string) error {
