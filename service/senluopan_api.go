@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -121,9 +122,13 @@ func requestSenluopanDirectLinkResult(provider model.StorageProvider, objectKey 
 	if pathPrefix != "" && strings.HasPrefix(objectKey, pathPrefix+"/") {
 		// 移除 pathPrefix 前缀
 		relativePath = strings.TrimPrefix(objectKey, pathPrefix+"/")
+		log.Printf("[DEBUG] senluopan path conversion: objectKey=%s pathPrefix=%s relativePath=%s", objectKey, pathPrefix, relativePath)
+	} else {
+		log.Printf("[DEBUG] senluopan path no conversion: objectKey=%s pathPrefix=%s", objectKey, pathPrefix)
 	}
 
 	fileURL := url.URL{Scheme: "cloudreve", Host: "my", Path: "/" + strings.TrimLeft(relativePath, "/")}
+	log.Printf("[DEBUG] senluopan cloudreve URI: %s", fileURL.String())
 	body, err := json.Marshal(map[string][]string{"uris": {fileURL.String()}})
 	if err != nil {
 		return "", "", err
