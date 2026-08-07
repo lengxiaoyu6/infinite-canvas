@@ -113,7 +113,17 @@ func requestSenluopanDirectLinkResult(provider model.StorageProvider, objectKey 
 	if endpoint == "" || token == "" {
 		return "", "", errors.New("森络盘 API 配置不完整")
 	}
-	fileURL := url.URL{Scheme: "cloudreve", Host: "my", Path: "/" + strings.TrimLeft(objectKey, "/")}
+
+	// 修复：从 objectKey 中移除 PathPrefix，因为森络盘 WebDAV 的根目录
+	// 可能已经指向了 PathPrefix 对应的目录
+	pathPrefix := strings.Trim(strings.TrimSpace(provider.PathPrefix), "/")
+	relativePath := objectKey
+	if pathPrefix != "" && strings.HasPrefix(objectKey, pathPrefix+"/") {
+		// 移除 pathPrefix 前缀
+		relativePath = strings.TrimPrefix(objectKey, pathPrefix+"/")
+	}
+
+	fileURL := url.URL{Scheme: "cloudreve", Host: "my", Path: "/" + strings.TrimLeft(relativePath, "/")}
 	body, err := json.Marshal(map[string][]string{"uris": {fileURL.String()}})
 	if err != nil {
 		return "", "", err
