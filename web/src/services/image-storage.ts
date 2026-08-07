@@ -125,24 +125,65 @@ export function getProxyUrl(url: string): string {
     return `/api/proxy-image?url=${encodeURIComponent(url)}`;
 }
 
-export async function uploadImage(input: string | Blob, options: UploadImageOptions = {}): Promise<UploadedImage> {
-    const url = typeof input === "string" ? getProxyUrl(input) : input;
-    let blob: Blob;
-    if (typeof url === "string") {
-        const response = await fetch(url);
-        if (!response.ok) {
-            const payload = await response.json().catch(() => null) as { msg?: string } | null;
-            throw new Error(payload?.msg || `代理图片拉取失败：${response.status}`);
-        }
-        const contentType = response.headers.get("content-type") || "";
-        if (contentType.includes("application/json")) {
-            const payload = await response.json().catch(() => null) as { msg?: string } | null;
-            throw new Error(payload?.msg || "代理图片下载失败");
-        }
-        blob = await response.blob();
-    } else {
-        blob = url;
+function getProxyImageSourceUrl(value: string) {
+    try {
+        const base = typeof window === "undefined" ? "http://localhost" : window.location.origin;
+        const parsed = new URL(value, base);
+        if (parsed.pathname !== "/api/proxy-image") return "";
+        const sourceUrl = parsed.searchParams.get("url") || "";
+        return sourceUrl.startsWith("http://") || sourceUrl.startsWith("https://") ? sourceUrl : "";
+    } catch {
+        return "";
     }
+}
+
+export function getImageRequestUrls(url: string) {
+    const sourceUrl = getProxyImageSourceUrl(url) || url;
+    if (!sourceUrl.startsWith("http://") && !sourceUrl.startsWith("https://")) return [sourceUrl];
+    const proxyUrl = getProxyUrl(sourceUrl);
+    return [sourceUrl, proxyUrl, url].filter((item, index, list) => Boolean(item) && list.indexOf(item) === index);
+}
+
+function publicImageUrl(value: string) {
+    if (!value || value.startsWith("blob:") || value.startsWith("data:")) return "";
+    try {
+        const candidate = getProxyImageSourceUrl(value) || value;
+        const base = typeof window === "undefined" ? "http://localhost" : window.location.origin;
+        const baseOrigin = new URL(base).origin;
+        const parsed = new URL(candidate, base);
+        if (!["http:", "https:"].includes(parsed.protocol)) return "";
+        return parsed.origin === baseOrigin && (parsed.pathname === "/api" || parsed.pathname.startsWith("/api/")) ? "" : candidate;
+    } catch {
+        return "";
+    }
+}
+
+async function fetchImageBlob(url: string, fallbackMessage: string) {
+    let lastError = "";
+    for (const requestUrl of getImageRequestUrls(url)) {
+        try {
+            const response = await fetch(requestUrl);
+            if (!response.ok) {
+                const payload = await response.json().catch(() => null) as { msg?: string } | null;
+                lastError = payload?.msg || `${fallbackMessage}：${response.status}`;
+                continue;
+            }
+            const contentType = response.headers.get("content-type") || "";
+            if (contentType.includes("application/json")) {
+                const payload = await response.json().catch(() => null) as { msg?: string } | null;
+                lastError = payload?.msg || fallbackMessage;
+                continue;
+            }
+            return await response.blob();
+        } catch (error) {
+            lastError = error instanceof Error ? error.message : fallbackMessage;
+        }
+    }
+    throw new Error(lastError || fallbackMessage);
+}
+
+export async function uploadImage(input: string | Blob, options: UploadImageOptions = {}): Promise<UploadedImage> {
+    const blob = typeof input === "string" ? await fetchImageBlob(input, "图片拉取失败") : input;
     if (!options.localOnly) {
         const serverUpload = await maybeUploadImageToServer(blob);
         if (serverUpload) return serverUpload;
@@ -156,12 +197,7 @@ export async function uploadImage(input: string | Blob, options: UploadImageOpti
 }
 
 export async function uploadRemoteImageToServer(url: string, filename: string): Promise<UploadedImage> {
-    const response = await fetch(getProxyUrl(url));
-    if (!response.ok) {
-        const payload = await response.json().catch(() => null) as { msg?: string } | null;
-        throw new Error(payload?.msg || "代理图片拉取失败：" + response.status);
-    }
-    const blob = await response.blob();
+    const blob = await fetchImageBlob(url, "图片拉取失败");
     const config = await loadStorageConfig();
     const userProvider = config.allowUserProvider ? loadUserStorageProvider() : null;
     if (!canUseGlobalStorage(config) && !userProvider) throw new Error("服务端对象存储未启用");
@@ -173,7 +209,7 @@ export async function uploadRemoteImageToServer(url: string, filename: string): 
     const uploadResponse = await fetch("/api/v1/files", { method: "POST", headers: { Authorization: "Bearer " + token }, body: formData });
     const payload = (await uploadResponse.json().catch(() => null)) as { code?: number; msg?: string; data?: UploadedImage } | null;
     if (!uploadResponse.ok || payload?.code !== 0 || !payload.data) throw new Error(payload?.msg || "服务端图片上传失败");
-    const meta = await readImageMeta(payload.data.url);
+    const meta = await readBlobMeta(blob);
     if (payload.data.storageKey?.startsWith("server:")) serverUrls.set(payload.data.storageKey.slice("server:".length), payload.data.url);
     return { ...payload.data, width: payload.data.width || meta.width, height: payload.data.height || meta.height, mimeType: payload.data.mimeType || blob.type || "image/png", bytes: payload.data.bytes || blob.size };
 }
@@ -186,7 +222,11 @@ export async function resolveImageUrl(storageKey?: string, fallback = "") {
     if (!storageKey) return fallback;
     if (storageKey.startsWith("server:")) {
         const id = storageKey.slice("server:".length);
-        if (fallback && !fallback.startsWith("blob:")) return fallback;
+        const fallbackUrl = publicImageUrl(fallback);
+        if (fallbackUrl) {
+            serverUrls.set(id, fallbackUrl);
+            return fallbackUrl;
+        }
         const cached = objectUrls.get(storageKey);
         if (cached) return cached;
         const blob = await store.getItem<Blob>(storageKey).catch(() => null);
@@ -232,7 +272,7 @@ async function maybeUploadImageToServer(blob: Blob): Promise<UploadedImage | nul
         if (!canUseGlobalProvider) return null;
         throw new Error(payload?.msg || "服务端图片上传失败");
     }
-    const meta = await readImageMeta(payload.data.url);
+    const meta = await readBlobMeta(blob);
     if (payload.data.storageKey?.startsWith("server:")) serverUrls.set(payload.data.storageKey.slice("server:".length), payload.data.url);
     return { ...payload.data, width: payload.data.width || meta.width, height: payload.data.height || meta.height, mimeType: payload.data.mimeType || blob.type || "image/png", bytes: payload.data.bytes || blob.size };
 }
@@ -261,24 +301,20 @@ export async function setImageBlob(storageKey: string, blob: Blob) {
 
 export async function imageToDataUrl(image: { url?: string; dataUrl?: string; storageKey?: string }) {
     const serverObjectId = image.storageKey?.startsWith("server:") ? image.storageKey.slice("server:".length) : "";
+    const resolvedUrl = image.storageKey ? await resolveImageUrl(image.storageKey, image.url || image.dataUrl || "") : "";
     const urls = [
+        image.dataUrl?.startsWith("data:") ? image.dataUrl : "",
+        resolvedUrl,
         image.dataUrl && !image.dataUrl.startsWith("blob:") ? image.dataUrl : "",
         image.url && !image.url.startsWith("blob:") ? image.url : "",
         serverObjectId ? `/api/files/${encodeURIComponent(serverObjectId)}/content` : "",
-        !serverObjectId ? await resolveImageUrl(image.storageKey, image.url || image.dataUrl || "") : "",
     ].filter((url, index, list): url is string => Boolean(url) && list.indexOf(url) === index);
     if (!urls.length) return "";
     let lastError = "";
     for (const url of urls) {
         if (url.startsWith("data:")) return url;
         try {
-            const proxyUrl = getProxyUrl(url);
-            const response = await fetch(proxyUrl);
-            if (!response.ok) {
-                lastError = `读取参考图失败：${response.status}`;
-                continue;
-            }
-            return blobToDataUrl(await response.blob());
+            return blobToDataUrl(await fetchImageBlob(url, "读取参考图失败"));
         } catch (error) {
             lastError = error instanceof Error ? error.message : "读取参考图失败";
         }
@@ -454,6 +490,15 @@ async function deleteServerImage(storageKey: string) {
     });
     const payload = (await response.json().catch(() => null)) as { code?: number; msg?: string } | null;
     if (!response.ok || payload?.code !== 0) throw new Error(payload?.msg || "删除服务端图片失败");
+}
+
+async function readBlobMeta(blob: Blob) {
+    const objectUrl = URL.createObjectURL(blob);
+    try {
+        return await readImageMeta(objectUrl);
+    } finally {
+        URL.revokeObjectURL(objectUrl);
+    }
 }
 
 function blobToDataUrl(blob: Blob) {

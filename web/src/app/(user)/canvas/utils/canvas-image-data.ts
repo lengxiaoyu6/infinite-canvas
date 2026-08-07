@@ -1,6 +1,6 @@
 "use client";
 
-import { getProxyUrl } from "@/services/image-storage";
+import { getImageRequestUrls } from "@/services/image-storage";
 
 export type ImageCropRect = {
     x: number;
@@ -37,33 +37,35 @@ export type ImageSplitPiece = {
 };
 
 export async function cropDataUrl(dataUrl: string, crop?: ImageCropRect) {
-    const image = await loadImage(dataUrl);
-    if (crop) {
-        return drawCrop(image, Math.floor(crop.x * image.width), Math.floor(crop.y * image.height), Math.ceil(crop.width * image.width), Math.ceil(crop.height * image.height));
-    }
-    const size = Math.min(image.width, image.height);
-    const sx = Math.max(0, Math.floor((image.width - size) / 2));
-    const sy = Math.max(0, Math.floor((image.height - size) / 2));
-    return drawCrop(image, sx, sy, size, size);
+    return withLoadedImage(dataUrl, (image) => {
+        if (crop) {
+            return drawCrop(image, Math.floor(crop.x * image.width), Math.floor(crop.y * image.height), Math.ceil(crop.width * image.width), Math.ceil(crop.height * image.height));
+        }
+        const size = Math.min(image.width, image.height);
+        const sx = Math.max(0, Math.floor((image.width - size) / 2));
+        const sy = Math.max(0, Math.floor((image.height - size) / 2));
+        return drawCrop(image, sx, sy, size, size);
+    });
 }
 
 export async function splitDataUrl(dataUrl: string, params: ImageSplitParams): Promise<ImageSplitPiece[]> {
-    const image = await loadImage(dataUrl);
-    const xCuts = buildSplitCuts(params.verticalLines, image.width);
-    const yCuts = buildSplitCuts(params.horizontalLines, image.height);
-    const pieces: ImageSplitPiece[] = [];
+    return withLoadedImage(dataUrl, (image) => {
+        const xCuts = buildSplitCuts(params.verticalLines, image.width);
+        const yCuts = buildSplitCuts(params.horizontalLines, image.height);
+        const pieces: ImageSplitPiece[] = [];
 
-    for (let row = 0; row < yCuts.length - 1; row += 1) {
-        const sy = yCuts[row];
-        const sh = yCuts[row + 1] - sy;
-        for (let column = 0; column < xCuts.length - 1; column += 1) {
-            const sx = xCuts[column];
-            const sw = xCuts[column + 1] - sx;
-            pieces.push({ row, column, dataUrl: drawCrop(image, sx, sy, sw, sh) });
+        for (let row = 0; row < yCuts.length - 1; row += 1) {
+            const sy = yCuts[row];
+            const sh = yCuts[row + 1] - sy;
+            for (let column = 0; column < xCuts.length - 1; column += 1) {
+                const sx = xCuts[column];
+                const sw = xCuts[column + 1] - sx;
+                pieces.push({ row, column, dataUrl: drawCrop(image, sx, sy, sw, sh) });
+            }
         }
-    }
 
-    return pieces;
+        return pieces;
+    });
 }
 
 function buildSplitCuts(lines: number[], size: number) {
@@ -71,49 +73,51 @@ function buildSplitCuts(lines: number[], size: number) {
 }
 
 export async function transformAngleDataUrl(dataUrl: string, params: ImageAngleTransform) {
-    const image = await loadImage(dataUrl);
-    const canvas = document.createElement("canvas");
-    const padding = Math.round(Math.max(image.width, image.height) * 0.18);
-    canvas.width = image.width + padding * 2;
-    canvas.height = image.height + padding * 2;
-    const context = canvas.getContext("2d");
-    if (!context) return dataUrl;
-    context.clearRect(0, 0, canvas.width, canvas.height);
+    return withLoadedImage(dataUrl, (image) => {
+        const canvas = document.createElement("canvas");
+        const padding = Math.round(Math.max(image.width, image.height) * 0.18);
+        canvas.width = image.width + padding * 2;
+        canvas.height = image.height + padding * 2;
+        const context = canvas.getContext("2d");
+        if (!context) return dataUrl;
+        context.clearRect(0, 0, canvas.width, canvas.height);
 
-    const horizontal = params.horizontalAngle / 60;
-    const pitch = params.pitchAngle / 45;
-    const distanceScale = 1.12 - params.cameraDistance * 0.035;
-    const wideScale = params.wideAngle ? 0.88 : 1;
-    const scale = Math.max(0.64, Math.min(1.1, distanceScale * wideScale));
-    const width = image.width * scale * (1 - Math.abs(horizontal) * 0.28);
-    const height = image.height * scale * (1 - Math.abs(pitch) * 0.18);
-    const cx = canvas.width / 2;
-    const cy = canvas.height / 2;
-    const skewX = horizontal * image.width * 0.18;
-    const skewY = pitch * image.height * 0.12;
-    const x = cx - width / 2 + horizontal * padding * 0.5;
-    const y = cy - height / 2 + pitch * padding * 0.45;
+        const horizontal = params.horizontalAngle / 60;
+        const pitch = params.pitchAngle / 45;
+        const distanceScale = 1.12 - params.cameraDistance * 0.035;
+        const wideScale = params.wideAngle ? 0.88 : 1;
+        const scale = Math.max(0.64, Math.min(1.1, distanceScale * wideScale));
+        const width = image.width * scale * (1 - Math.abs(horizontal) * 0.28);
+        const height = image.height * scale * (1 - Math.abs(pitch) * 0.18);
+        const cx = canvas.width / 2;
+        const cy = canvas.height / 2;
+        const skewX = horizontal * image.width * 0.18;
+        const skewY = pitch * image.height * 0.12;
+        const x = cx - width / 2 + horizontal * padding * 0.5;
+        const y = cy - height / 2 + pitch * padding * 0.45;
 
-    context.save();
-    context.setTransform(1, pitch * 0.08, horizontal * -0.1, 1, 0, 0);
-    context.drawImage(image, x + skewX, y + skewY, width, height);
-    context.restore();
+        context.save();
+        context.setTransform(1, pitch * 0.08, horizontal * -0.1, 1, 0, 0);
+        context.drawImage(image, x + skewX, y + skewY, width, height);
+        context.restore();
 
-    if (params.wideAngle) {
-        const gradient = context.createRadialGradient(cx, cy, Math.min(canvas.width, canvas.height) * 0.2, cx, cy, Math.max(canvas.width, canvas.height) * 0.62);
-        gradient.addColorStop(0, "rgba(255,255,255,0)");
-        gradient.addColorStop(1, "rgba(0,0,0,0.18)");
-        context.fillStyle = gradient;
-        context.fillRect(0, 0, canvas.width, canvas.height);
-    }
+        if (params.wideAngle) {
+            const gradient = context.createRadialGradient(cx, cy, Math.min(canvas.width, canvas.height) * 0.2, cx, cy, Math.max(canvas.width, canvas.height) * 0.62);
+            gradient.addColorStop(0, "rgba(255,255,255,0)");
+            gradient.addColorStop(1, "rgba(0,0,0,0.18)");
+            context.fillStyle = gradient;
+            context.fillRect(0, 0, canvas.width, canvas.height);
+        }
 
-    return canvas.toDataURL("image/png");
+        return canvas.toDataURL("image/png");
+    });
 }
 
 export async function upscaleDataUrl(dataUrl: string, params: ImageUpscaleParams) {
-    const image = await loadImage(dataUrl);
-    const { width, height } = resolveUpscaleSize(image.width, image.height, params.targetLongEdge);
-    return params.algorithm === "high" ? drawStepUpscale(image, width, height) : drawResize(image, image.width, image.height, width, height, params.algorithm);
+    return withLoadedImage(dataUrl, (image) => {
+        const { width, height } = resolveUpscaleSize(image.width, image.height, params.targetLongEdge);
+        return params.algorithm === "high" ? drawStepUpscale(image, width, height) : drawResize(image, image.width, image.height, width, height, params.algorithm);
+    });
 }
 
 export function resolveUpscaleSize(width: number, height: number, targetLongEdge: number) {
@@ -166,14 +170,22 @@ function drawResizeCanvas(source: CanvasImageSource, sourceWidth: number, source
     return canvas;
 }
 
-function loadImage(dataUrl: string) {
+async function withLoadedImage<T>(dataUrl: string, render: (image: HTMLImageElement) => T) {
+    let lastError: unknown = null;
+    for (const src of getImageRequestUrls(dataUrl)) {
+        try {
+            return render(await loadImageFromSrc(src));
+        } catch (error) {
+            lastError = error;
+        }
+    }
+    throw lastError || new Error("图片加载失败");
+}
+
+function loadImageFromSrc(src: string) {
     return new Promise<HTMLImageElement>((resolve, reject) => {
         const image = new Image();
-        let src = dataUrl;
-        if (dataUrl.startsWith("http")) {
-            src = getProxyUrl(dataUrl);
-            image.crossOrigin = "anonymous";
-        }
+        if (src.startsWith("http")) image.crossOrigin = "anonymous";
         image.onload = () => resolve(image);
         image.onerror = (err) => reject(err);
         image.src = src;

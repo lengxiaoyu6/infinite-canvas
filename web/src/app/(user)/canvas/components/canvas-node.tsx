@@ -7,6 +7,7 @@ import { ChevronRight, Image as ImageIcon, Music2, RefreshCw, Star, Video } from
 
 import { canvasThemes } from "@/lib/canvas-theme";
 import { formatBytes, formatDuration } from "@/lib/image-utils";
+import { getImageRequestUrls } from "@/services/image-storage";
 import { useThemeStore } from "@/stores/use-theme-store";
 import { CanvasResourceMentionTextarea } from "./canvas-resource-mention-textarea";
 import { CanvasNodeType, type CanvasNodeData, type Position } from "../types";
@@ -665,6 +666,31 @@ function EmptyImageContent({ node, theme, isBatchRoot, batchCount, batchExpanded
     return content;
 }
 
+function CanvasImage({ src, alt, freeResize }: { src: string; alt: string; freeResize?: boolean }) {
+    const firstSrc = getImageRequestUrls(src)[0] || src;
+    const [currentSrc, setCurrentSrc] = useState(firstSrc);
+
+    useEffect(() => setCurrentSrc(firstSrc), [firstSrc]);
+
+    const handleError = useCallback(() => {
+        const urls = getImageRequestUrls(src);
+        const index = urls.indexOf(currentSrc);
+        const nextSrc = urls[index >= 0 ? index + 1 : 1];
+        if (nextSrc && nextSrc !== currentSrc) setCurrentSrc(nextSrc);
+    }, [currentSrc, src]);
+
+    return (
+        <img
+            src={currentSrc}
+            alt={alt}
+            draggable={false}
+            onDragStart={(event) => event.preventDefault()}
+            onError={handleError}
+            className={`pointer-events-none block h-full w-full select-none ${freeResize ? "object-fill" : "object-contain"}`}
+        />
+    );
+}
+
 function VideoNodeContent({ node, theme }: NodeContentRendererProps) {
     if (!node.metadata?.content)
         return (
@@ -722,15 +748,7 @@ function ImageContent({
     return (
         <BatchFrame batchCount={isBatchRoot ? batchCount : 0} batchExpanded={batchExpanded} batchOpening={batchOpening} batchRecovering={batchRecovering} onToggleBatch={onToggleBatch}>
             <div className="h-full w-full overflow-hidden rounded-3xl">
-                {media ?? (
-                    <img
-                        src={node.metadata!.content!}
-                        alt={node.title}
-                        draggable={false}
-                        onDragStart={(event) => event.preventDefault()}
-                        className={`pointer-events-none block h-full w-full select-none ${node.metadata?.freeResize ? "object-fill" : "object-contain"}`}
-                    />
-                )}
+                {media ?? <CanvasImage src={node.metadata!.content!} alt={node.title} freeResize={node.metadata?.freeResize} />}
             </div>
             {isBatchRoot ? (
                 <button
