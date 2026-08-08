@@ -7,7 +7,10 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"mime"
+	"mime/multipart"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -161,7 +164,7 @@ func proxyAIVideoTaskRequest(w http.ResponseWriter, r *http.Request) {
 		ChannelName:     channel.Name,
 		Source:          readVideoTaskSource(r),
 		SourceID:        readVideoTaskSourceID(r),
-		ClientTaskID:     readClientVideoTaskID(r),
+		ClientTaskID:    readClientVideoTaskID(r),
 		UpstreamTaskID:  parsed.UpstreamTaskID,
 		UpstreamVideoID: parsed.UpstreamVideoID,
 		Status:          parsed.Status,
@@ -305,7 +308,115 @@ func normalizeVideoCreateBody(body []byte, contentType string, modelName string,
 	if isAPIMartChannel(channel, modelName) && upstreamPath == "/videos/generations" {
 		return normalizeAPIMartVideoBody(body, contentType, modelName, channel)
 	}
+	if upstreamPath == "/videos" && isXAICompatibleVideoModel(modelName) {
+		return normalizeXAICompatibleVideoBody(body, contentType, modelName)
+	}
 	return body, contentType, nil
+}
+
+func isXAICompatibleVideoModel(modelName string) bool {
+	return strings.Contains(strings.ToLower(strings.TrimSpace(modelName)), "grok-imagine-video")
+}
+
+func normalizeXAICompatibleVideoBody(body []byte, contentType string, modelName string) ([]byte, string, error) {
+	payload, err := readXAICompatibleVideoPayload(body, contentType)
+	if err != nil {
+		return body, contentType, err
+	}
+	if hasXAICompatibleVideoReferences(payload) {
+		return body, contentType, errors.New("xAI 视频模型暂不支持参考素材")
+	}
+
+	prompt := strings.TrimSpace(payload["prompt"])
+	if prompt == "" {
+		return body, contentType, errors.New("xAI 视频模型缺少提示词")
+	}
+	durationText := firstNonEmpty(payload["duration"], payload["seconds"])
+	duration, err := strconv.Atoi(strings.TrimSpace(durationText))
+	if err != nil || duration < 1 {
+		return body, contentType, errors.New("xAI 视频模型时长参数无效")
+	}
+
+	result := map[string]any{
+		"model":        strings.TrimSpace(modelName),
+		"prompt":       prompt,
+		"duration":     duration,
+		"aspect_ratio": normalizeXAICompatibleVideoAspectRatio(payload["aspect_ratio"], payload["size"]),
+		"resolution":   normalizeXAICompatibleVideoResolution(payload["resolution"], payload["resolution_name"]),
+	}
+	encoded, err := json.Marshal(result)
+	if err != nil {
+		return body, contentType, err
+	}
+	return encoded, "application/json", nil
+}
+
+func readXAICompatibleVideoPayload(body []byte, contentType string) (map[string]string, error) {
+	payload := map[string]string{}
+	if !strings.HasPrefix(strings.ToLower(contentType), "multipart/form-data") {
+		var value map[string]any
+		if err := json.Unmarshal(body, &value); err != nil {
+			return nil, err
+		}
+		for key, item := range value {
+			payload[key] = strings.TrimSpace(toStringSafe(item))
+		}
+		return payload, nil
+	}
+
+	_, params, err := mime.ParseMediaType(contentType)
+	if err != nil {
+		return nil, err
+	}
+	form, err := multipart.NewReader(bytes.NewReader(body), params["boundary"]).ReadForm(32 << 20)
+	if err != nil {
+		return nil, err
+	}
+	defer form.RemoveAll()
+	for key, values := range form.Value {
+		if len(values) > 0 {
+			payload[key] = strings.TrimSpace(values[0])
+		}
+	}
+	for key, files := range form.File {
+		if len(files) > 0 {
+			payload[key] = "__file__"
+		}
+	}
+	return payload, nil
+}
+
+func hasXAICompatibleVideoReferences(payload map[string]string) bool {
+	for _, key := range []string{"input_reference[]", "first_frame_url", "last_frame_url", "video_reference[]", "audio_reference[]"} {
+		if strings.TrimSpace(payload[key]) != "" {
+			return true
+		}
+	}
+	return false
+}
+
+func normalizeXAICompatibleVideoAspectRatio(aspectRatio string, size string) string {
+	value := strings.ReplaceAll(strings.ToLower(strings.TrimSpace(firstNonEmpty(aspectRatio, size))), " ", "")
+	switch value {
+	case "9:16", "720x1280", "1080x1920":
+		return "9:16"
+	case "1:1", "720x720", "1024x1024", "1080x1080":
+		return "1:1"
+	default:
+		return "16:9"
+	}
+}
+
+func normalizeXAICompatibleVideoResolution(values ...string) string {
+	value := strings.ToLower(strings.TrimSpace(firstNonEmpty(values...)))
+	switch value {
+	case "480p", "720p", "1080p":
+		return value
+	case "low":
+		return "480p"
+	default:
+		return "720p"
+	}
 }
 
 func doAIRequest(request *http.Request, channel model.ModelChannel) ([]byte, int, error) {
