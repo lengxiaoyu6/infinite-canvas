@@ -18,7 +18,7 @@ import { formatBytes, formatDuration } from "@/lib/image-utils";
 import { boolConfig, isSeedanceVideoConfig, normalizeSeedanceRatio, seedanceReferenceLabel, seedanceVideoReferenceError, seedanceVideoReferenceHint, SEEDANCE_REFERENCE_LIMITS } from "@/lib/seedance-video";
 import { modelKey, supportsVideoAudioGeneration, supportsVideoFrameReferences } from "@/lib/video-model-capabilities";
 import { deleteStoredMedia, downloadRemoteMedia, resolveMediaUrl, uploadMediaFile, uploadRemoteMediaToServer } from "@/services/file-storage";
-import { deleteStoredImages, resolveImageUrl, uploadImage } from "@/services/image-storage";
+import { canUseGlobalStorage, deleteStoredImages, loadStorageConfig, loadUserStorageProvider, resolveImageUrl, uploadImage } from "@/services/image-storage";
 import { deleteVideoGenerationLogs, fetchVideoGenerationLogs, saveVideoGenerationLogs } from "@/services/api/generation-logs";
 import { createVideoGenerationTask, deleteVideoGenerationTask, listVideoGenerationTasks, pollVideoGenerationTaskStatus, VIDEO_POLL_INTERVAL_MS, VideoRequestError, type VideoResponse } from "@/services/api/video";
 import { useAssetStore } from "@/stores/use-asset-store";
@@ -719,20 +719,31 @@ export default function VideoPage() {
         }
     };
 
-    const syncVideo = async (video: GeneratedVideo, index = 0) => {
+    const syncVideo = async (video: GeneratedVideo, index = 0, options: { silent?: boolean } = {}) => {
         if (isCloudVideo(video)) return video;
-        setSyncingVideoIds((ids) => Array.from(new Set([...ids, video.id])));
-        const hideLoading = message.loading("正在同步视频到云端存储...", 0);
+        const silent = Boolean(options.silent);
+        if (!silent) setSyncingVideoIds((ids) => Array.from(new Set([...ids, video.id])));
+        const hideLoading = silent ? undefined : message.loading("正在同步视频到云端存储...", 0);
         try {
             const uploaded = await uploadRemoteMediaToServer(video.url, `video-${index + 1}.mp4`);
-            message.success("视频已同步到云端存储");
+            if (!silent) message.success("视频已同步到云端存储");
             return { ...video, url: uploaded.url, storageKey: uploaded.storageKey, width: uploaded.width || video.width, height: uploaded.height || video.height, bytes: uploaded.bytes || video.bytes, mimeType: uploaded.mimeType || video.mimeType };
         } catch (error) {
-            message.error(error instanceof Error ? error.message : "视频同步失败");
+            if (!silent) message.error(error instanceof Error ? error.message : "视频同步失败");
             return null;
         } finally {
-            hideLoading();
-            setSyncingVideoIds((ids) => ids.filter((id) => id !== video.id));
+            hideLoading?.();
+            if (!silent) setSyncingVideoIds((ids) => ids.filter((id) => id !== video.id));
+        }
+    };
+
+    const uploadCompletedVideoOrFallback = async (video: GeneratedVideo, index = 0) => {
+        try {
+            if (!(await canAutoUploadGeneratedVideo())) return video;
+            const synced = await syncVideo(video, index, { silent: true });
+            return synced || video;
+        } catch {
+            return video;
         }
     };
 
@@ -966,7 +977,9 @@ export default function VideoPage() {
                     return;
                 }
                 const video = videoFromTaskResponse(task, durationMs);
-                const nextLog = { ...baseLog, status: "成功" as const, video, error: undefined, errorDetail: undefined };
+                const logIndex = logsRef.current.findIndex((item) => item.id === log.id);
+                const finalVideo = await uploadCompletedVideoOrFallback(video, logIndex >= 0 ? logIndex : 0);
+                const nextLog = { ...baseLog, status: "成功" as const, video: finalVideo, error: undefined, errorDetail: undefined };
                 await finalizeGenerationLog(nextLog);
                 setResults((value) => value.filter((item) => item.taskLogId !== log.id && item.id !== log.id));
                 return;
@@ -1973,7 +1986,14 @@ function VideoMetaBar({ video, syncing, onDownload, onSync, onSaveAsset }: { vid
 }
 
 function VideoSourceTag({ video }: { video: GeneratedVideo }) {
-    return <Tag className="m-0 text-[10px]" color={video.storageKey ? "default" : "gold"}>{video.storageKey ? "本地缓存" : "AI 临时URL"}</Tag>;
+    const source = videoSourceTagInfo(video);
+    return <Tag className="m-0 text-[10px]" color={source.color}>{source.label}</Tag>;
+}
+
+function videoSourceTagInfo(video: GeneratedVideo) {
+    if (isCloudVideo(video)) return { label: "云端存储", color: "blue" };
+    if (video.storageKey) return { label: "本地缓存", color: "default" };
+    return { label: "AI 临时URL", color: "gold" };
 }
 
 function TaskInfo({ item, error, onCopyPrompt }: { item: GenerationResult; error?: string; onCopyPrompt: (text: string) => void | Promise<void> }) {
@@ -2502,7 +2522,14 @@ function isRecoverableBackendVideoTask(task: VideoResponse) {
 }
 
 function isCloudVideo(video: GeneratedVideo) {
-    return Boolean(video.storageKey);
+    return video.storageKey.startsWith("server:");
+}
+
+async function canAutoUploadGeneratedVideo() {
+    if (!useUserStore.getState().token) return false;
+    const config = await loadStorageConfig().catch(() => null);
+    if (!config) return false;
+    return canUseGlobalStorage(config) || Boolean(config.allowUserProvider && loadUserStorageProvider());
 }
 
 function errorMessage(error: unknown) {
