@@ -545,10 +545,18 @@ func collectXAICompatibleVideoReferencesForKeys(payload xaiCompatibleVideoPayloa
 	result := []map[string]string{}
 	for _, key := range keys {
 		for _, value := range payload.Values[key] {
-			appendXAICompatibleVideoReference(&result, "url", value)
+			uri, err := xaiCompatibleVideoReferenceURLToDataURI(value)
+			if err != nil {
+				return nil, err
+			}
+			appendXAICompatibleVideoReference(&result, "url", uri)
 		}
 		for _, value := range payload.Values[key+".url"] {
-			appendXAICompatibleVideoReference(&result, "url", value)
+			uri, err := xaiCompatibleVideoReferenceURLToDataURI(value)
+			if err != nil {
+				return nil, err
+			}
+			appendXAICompatibleVideoReference(&result, "url", uri)
 		}
 		for _, value := range payload.Values[key+".file_id"] {
 			appendXAICompatibleVideoReference(&result, "file_id", value)
@@ -562,6 +570,43 @@ func collectXAICompatibleVideoReferencesForKeys(payload xaiCompatibleVideoPayloa
 		}
 	}
 	return result, nil
+}
+
+// xaiCompatibleVideoReferenceURLToDataURI 把 http(s) 参考图链接在服务端下载并内联成
+// base64 data URI。部分对象存储直链（如森络盘）会 302 跳转到国内移动云主机，海外的 xAI
+// 上游解析该域名 DNS 超时而无法下载，改为服务端下载后内联可绕开上游的网络访问。
+// data URI、file_id 等非 http(s) 值原样返回。
+func xaiCompatibleVideoReferenceURLToDataURI(value string) (string, error) {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return "", nil
+	}
+	if !strings.HasPrefix(trimmed, "http://") && !strings.HasPrefix(trimmed, "https://") {
+		return trimmed, nil
+	}
+	request, err := http.NewRequest(http.MethodGet, trimmed, nil)
+	if err != nil {
+		return "", err
+	}
+	response, err := service.SafeProxyHTTPClient().Do(request)
+	if err != nil {
+		return "", fmt.Errorf("下载 xAI 视频参考图片失败: %w", err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
+		return "", fmt.Errorf("下载 xAI 视频参考图片失败: %s", response.Status)
+	}
+	data, err := io.ReadAll(io.LimitReader(response.Body, referenceImageMaxBytes+1))
+	if err != nil {
+		return "", fmt.Errorf("下载 xAI 视频参考图片失败: %w", err)
+	}
+	if int64(len(data)) > referenceImageMaxBytes {
+		return "", errors.New("xAI 视频参考图片超过大小限制")
+	}
+	return xaiCompatibleVideoFileDataURI(xaiCompatibleVideoFile{
+		ContentType: response.Header.Get("Content-Type"),
+		Data:        data,
+	})
 }
 
 func appendXAICompatibleVideoReference(result *[]map[string]string, field string, value string) {
