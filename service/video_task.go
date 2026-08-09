@@ -12,6 +12,7 @@ import (
 )
 
 const videoTaskPollInterval = 5 * time.Second
+const videoTaskPollTimeout = 30 * time.Minute
 const videoTaskFinishedRetention = 10 * time.Minute
 const videoTaskCleanupInterval = 10 * time.Minute
 
@@ -227,6 +228,9 @@ func runVideoTaskPoller() {
 				lastCleanupAt = current
 			}
 			for _, task := range tasks {
+				if isVideoTaskPollTooSoon(task, current) {
+					continue
+				}
 				if _, loaded := inFlight.LoadOrStore(task.ID, true); loaded {
 					continue
 				}
@@ -298,6 +302,11 @@ func UpdateVideoTaskFromPoll(task model.VideoTask, update VideoTaskPollUpdate) e
 	} else if task.Error != "" || IsFailedVideoTaskStatus(task.Status) {
 		task.Status = "failed"
 		task.CompletedAt = current
+	} else if isVideoTaskPollExpired(task, time.Now()) {
+		task.Status = "failed"
+		task.CompletedAt = current
+		task.Error = firstVideoTaskValue(task.Error, "视频任务轮询超时")
+		task.ErrorDetail = firstVideoTaskValue(task.ErrorDetail, "视频任务长时间未完成，已停止轮询")
 	}
 	_, err := repository.SaveVideoTask(task)
 	return err
@@ -309,7 +318,7 @@ func NormalizeVideoTaskStatus(status string) string {
 		return "completed"
 	case "failed", "fail", "error", "cancelled", "canceled":
 		return "failed"
-	case "running", "processing", "in_progress", "in-progress":
+	case "running", "processing", "in_progress", "in-progress", "unknown":
 		return "processing"
 	case "queued", "queue", "pending", "":
 		return "queued"
@@ -328,6 +337,35 @@ func IsFailedVideoTaskStatus(status string) bool {
 
 func videoTaskTime(value time.Time) string {
 	return value.UTC().Format(time.RFC3339Nano)
+}
+
+func isVideoTaskPollTooSoon(task model.VideoTask, current time.Time) bool {
+	if createdAt, ok := parseVideoTaskTime(task.CreatedAt); ok && current.Sub(createdAt) < videoTaskPollInterval {
+		return true
+	}
+	if lastPolledAt, ok := parseVideoTaskTime(task.LastPolledAt); ok && current.Sub(lastPolledAt) < videoTaskPollInterval {
+		return true
+	}
+	return false
+}
+
+func isVideoTaskPollExpired(task model.VideoTask, current time.Time) bool {
+	createdAt, ok := parseVideoTaskTime(task.CreatedAt)
+	return ok && current.Sub(createdAt) > videoTaskPollTimeout
+}
+
+func parseVideoTaskTime(value string) (time.Time, bool) {
+	text := strings.TrimSpace(value)
+	if text == "" {
+		return time.Time{}, false
+	}
+	if parsed, err := time.Parse(time.RFC3339Nano, text); err == nil {
+		return parsed, true
+	}
+	if parsed, err := time.Parse(time.RFC3339, text); err == nil {
+		return parsed, true
+	}
+	return time.Time{}, false
 }
 
 func firstVideoTaskValue(values ...string) string {

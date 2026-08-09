@@ -96,6 +96,7 @@ type WorkbenchLayout = "side" | "bottom";
 type AssetPickerTarget = "general" | "image" | "video" | "audio" | "firstFrame" | "lastFrame" | "element";
 
 const WORKBENCH_LAYOUT_KEY = "infinite-canvas:video-workbench-layout";
+const MAX_PENDING_LOG_POLLS_PER_TICK = 4;
 const logStore = localforage.createInstance({ name: "infinite-canvas", storeName: "video_generation_logs" });
 const quickResolutionOptions = [
     { value: "480", label: "480p" },
@@ -176,7 +177,10 @@ export default function VideoPage() {
     };
 
     const pollPendingLogsOnce = (sourceLogs: GenerationLog[]) => {
-        const pendingLogs = sourceLogs.filter((log) => log.status === "生成中" && log.task && !log.video);
+        const pendingLogs = sourceLogs
+            .filter((log) => log.status === "生成中" && log.task && !log.video && !pollingLogIdsRef.current.has(log.id))
+            .sort((a, b) => (a.lastPolledAt || 0) - (b.lastPolledAt || 0))
+            .slice(0, MAX_PENDING_LOG_POLLS_PER_TICK);
         if (!pendingLogs.length) return;
         pendingLogs.forEach((log) => {
             if (pollingLogIdsRef.current.has(log.id)) return;
@@ -190,7 +194,7 @@ export default function VideoPage() {
 
     useEffect(() => {
         if (!pendingCount && !pendingLogCount) return;
-        const timer = window.setInterval(() => setNow(Date.now()), 1000);
+        const timer = window.setInterval(() => setNow(Date.now()), VIDEO_POLL_INTERVAL_MS);
         return () => window.clearInterval(timer);
     }, [pendingCount, pendingLogCount]);
 
