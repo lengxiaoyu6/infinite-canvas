@@ -2,6 +2,7 @@ package handler
 
 import (
 	"bytes"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -89,7 +90,7 @@ func proxyAIVideoTaskRequest(w http.ResponseWriter, r *http.Request) {
 	body, contentType, err = normalizeVideoCreateBody(body, contentType, modelName, channel, upstreamPath)
 	if err != nil {
 		log.Printf("AI video normalize request failed: model=%s err=%v", modelName, err)
-		Fail(w, "AI 接口请求失败")
+		Fail(w, firstNonEmpty(err.Error(), "AI 接口请求失败"))
 		return
 	}
 	request, err := http.NewRequest(http.MethodPost, service.BuildModelChannelURL(channel, upstreamPath), bytes.NewReader(body))
@@ -308,7 +309,7 @@ func normalizeVideoCreateBody(body []byte, contentType string, modelName string,
 	if isAPIMartChannel(channel, modelName) && upstreamPath == "/videos/generations" {
 		return normalizeAPIMartVideoBody(body, contentType, modelName, channel)
 	}
-	if upstreamPath == "/videos" && isXAICompatibleVideoModel(modelName) {
+	if (upstreamPath == "/videos" || upstreamPath == "/videos/generations") && isXAICompatibleVideoModel(modelName) {
 		return normalizeXAICompatibleVideoBody(body, contentType, modelName)
 	}
 	return body, contentType, nil
@@ -318,32 +319,57 @@ func isXAICompatibleVideoModel(modelName string) bool {
 	return strings.Contains(strings.ToLower(strings.TrimSpace(modelName)), "grok-imagine-video")
 }
 
+type xaiCompatibleVideoPayload struct {
+	Values map[string][]string
+	Files  map[string][]xaiCompatibleVideoFile
+}
+
+type xaiCompatibleVideoFile struct {
+	ContentType string
+	Data        []byte
+}
+
 func normalizeXAICompatibleVideoBody(body []byte, contentType string, modelName string) ([]byte, string, error) {
 	payload, err := readXAICompatibleVideoPayload(body, contentType)
 	if err != nil {
 		return body, contentType, err
 	}
-	if hasXAICompatibleVideoReferences(payload) {
-		return body, contentType, errors.New("xAI 视频模型暂不支持参考素材")
+	if errMessage := readXAICompatibleVideoUnsupportedReferenceError(payload); errMessage != "" {
+		return body, contentType, errors.New(errMessage)
 	}
 
-	prompt := strings.TrimSpace(payload["prompt"])
+	prompt := strings.TrimSpace(firstXAICompatibleVideoValue(payload, "prompt"))
 	if prompt == "" {
 		return body, contentType, errors.New("xAI 视频模型缺少提示词")
 	}
-	durationText := firstNonEmpty(payload["duration"], payload["seconds"])
+	durationText := firstXAICompatibleVideoValue(payload, "duration", "seconds")
 	duration, err := strconv.Atoi(strings.TrimSpace(durationText))
 	if err != nil || duration < 1 {
 		return body, contentType, errors.New("xAI 视频模型时长参数无效")
 	}
 
+	primaryImages, referenceImages, err := collectXAICompatibleVideoImageReferences(payload)
+	if err != nil {
+		return body, contentType, err
+	}
 	result := map[string]any{
 		"model":        strings.TrimSpace(modelName),
 		"prompt":       prompt,
 		"duration":     duration,
-		"aspect_ratio": normalizeXAICompatibleVideoAspectRatio(payload["aspect_ratio"], payload["size"]),
-		"resolution":   normalizeXAICompatibleVideoResolution(payload["resolution"], payload["resolution_name"]),
+		"aspect_ratio": normalizeXAICompatibleVideoAspectRatio(firstXAICompatibleVideoValue(payload, "aspect_ratio"), firstXAICompatibleVideoValue(payload, "size")),
+		"resolution":   normalizeXAICompatibleVideoResolution(firstXAICompatibleVideoValue(payload, "resolution"), firstXAICompatibleVideoValue(payload, "resolution_name")),
 	}
+	if len(primaryImages) > 0 {
+		result["image"] = primaryImages[0]
+		referenceImages = append(primaryImages[1:], referenceImages...)
+	}
+	if len(referenceImages) > 0 {
+		result["reference_images"] = referenceImages
+	}
+	if referenceAudios := xaiCompatibleVideoVoiceReferences(payload); len(referenceAudios) > 0 {
+		result["reference_audios"] = referenceAudios
+	}
+
 	encoded, err := json.Marshal(result)
 	if err != nil {
 		return body, contentType, err
@@ -351,48 +377,233 @@ func normalizeXAICompatibleVideoBody(body []byte, contentType string, modelName 
 	return encoded, "application/json", nil
 }
 
-func readXAICompatibleVideoPayload(body []byte, contentType string) (map[string]string, error) {
-	payload := map[string]string{}
+func readXAICompatibleVideoPayload(body []byte, contentType string) (xaiCompatibleVideoPayload, error) {
+	payload := xaiCompatibleVideoPayload{Values: map[string][]string{}, Files: map[string][]xaiCompatibleVideoFile{}}
 	if !strings.HasPrefix(strings.ToLower(contentType), "multipart/form-data") {
 		var value map[string]any
 		if err := json.Unmarshal(body, &value); err != nil {
-			return nil, err
+			return payload, err
 		}
 		for key, item := range value {
-			payload[key] = strings.TrimSpace(toStringSafe(item))
+			addXAICompatibleVideoJSONValue(&payload, key, item)
 		}
 		return payload, nil
 	}
 
 	_, params, err := mime.ParseMediaType(contentType)
 	if err != nil {
-		return nil, err
+		return payload, err
 	}
 	form, err := multipart.NewReader(bytes.NewReader(body), params["boundary"]).ReadForm(32 << 20)
 	if err != nil {
-		return nil, err
+		return payload, err
 	}
 	defer form.RemoveAll()
 	for key, values := range form.Value {
-		if len(values) > 0 {
-			payload[key] = strings.TrimSpace(values[0])
+		for _, value := range values {
+			addXAICompatibleVideoValue(&payload, key, value)
 		}
 	}
 	for key, files := range form.File {
-		if len(files) > 0 {
-			payload[key] = "__file__"
+		for _, item := range files {
+			if isXAICompatibleVideoUnsupportedFileField(key) {
+				payload.Files[key] = append(payload.Files[key], xaiCompatibleVideoFile{ContentType: item.Header.Get("Content-Type")})
+				continue
+			}
+			file, err := item.Open()
+			if err != nil {
+				return payload, err
+			}
+			data, readErr := io.ReadAll(io.LimitReader(file, 32<<20+1))
+			_ = file.Close()
+			if readErr != nil {
+				return payload, readErr
+			}
+			if len(data) > 32<<20 {
+				return payload, errors.New("xAI 视频参考图片最大支持 32MB")
+			}
+			payload.Files[key] = append(payload.Files[key], xaiCompatibleVideoFile{ContentType: item.Header.Get("Content-Type"), Data: data})
 		}
 	}
 	return payload, nil
 }
 
-func hasXAICompatibleVideoReferences(payload map[string]string) bool {
-	for _, key := range []string{"input_reference[]", "first_frame_url", "last_frame_url", "video_reference[]", "audio_reference[]"} {
-		if strings.TrimSpace(payload[key]) != "" {
+func isXAICompatibleVideoUnsupportedFileField(key string) bool {
+	switch strings.TrimSpace(key) {
+	case "video_reference[]", "video_reference", "video_url", "video_urls", "video", "videos", "reference_video", "reference_videos", "reference_video_url", "reference_video_urls", "input_video_url", "input_video_urls":
+		return true
+	case "audio_reference[]", "audio_reference", "audio_url", "audio_urls", "audio", "audios", "reference_audio", "reference_audios", "reference_audio_url", "reference_audio_urls", "reference_voice", "input_audio_url", "input_audio_urls":
+		return true
+	default:
+		return false
+	}
+}
+
+func addXAICompatibleVideoJSONValue(payload *xaiCompatibleVideoPayload, key string, value any) {
+	switch typed := value.(type) {
+	case nil:
+		return
+	case []any:
+		for _, item := range typed {
+			addXAICompatibleVideoJSONValue(payload, key, item)
+		}
+	case map[string]any:
+		if text := strings.TrimSpace(firstNonEmpty(readXAICompatibleVideoJSONMapString(typed, "url"), readXAICompatibleVideoJSONMapString(typed, "image_url"))); text != "" {
+			addXAICompatibleVideoValue(payload, key+".url", text)
+		}
+		if text := strings.TrimSpace(readXAICompatibleVideoJSONMapString(typed, "file_id")); text != "" {
+			addXAICompatibleVideoValue(payload, key+".file_id", text)
+		}
+		if text := strings.TrimSpace(readXAICompatibleVideoJSONMapString(typed, "voice_id")); text != "" {
+			addXAICompatibleVideoValue(payload, key+".voice_id", text)
+		}
+	default:
+		addXAICompatibleVideoValue(payload, key, toStringSafe(value))
+	}
+}
+
+func readXAICompatibleVideoJSONMapString(value map[string]any, key string) string {
+	if item, ok := value[key]; ok {
+		return strings.TrimSpace(toStringSafe(item))
+	}
+	return ""
+}
+
+func addXAICompatibleVideoValue(payload *xaiCompatibleVideoPayload, key string, value string) {
+	key = strings.TrimSpace(key)
+	value = strings.TrimSpace(value)
+	if key == "" || value == "" {
+		return
+	}
+	payload.Values[key] = append(payload.Values[key], value)
+}
+
+func readXAICompatibleVideoUnsupportedReferenceError(payload xaiCompatibleVideoPayload) string {
+	if hasXAICompatibleVideoInput(payload, []string{"video_reference[]", "video_reference", "video_url", "video_urls", "video", "videos", "reference_video", "reference_videos", "reference_video_url", "reference_video_urls", "input_video_url", "input_video_urls"}) {
+		return "xAI 视频编辑需要使用 /videos/edits，当前视频生成入口暂不支持参考视频"
+	}
+	if hasXAICompatibleVideoInput(payload, []string{"audio_reference[]", "audio_reference", "audio_url", "audio_urls", "audio", "audios", "reference_audio_url", "reference_audio_urls", "input_audio_url", "input_audio_urls"}) || hasXAICompatibleVideoNonVoiceAudioReference(payload) {
+		return "xAI 视频模型的参考音频仅支持 voice_id 预设音色，当前上传音频文件或音频 URL 无法转换"
+	}
+	return ""
+}
+
+func hasXAICompatibleVideoInput(payload xaiCompatibleVideoPayload, keys []string) bool {
+	for _, key := range keys {
+		if len(payload.Values[key]) > 0 || len(payload.Values[key+".url"]) > 0 || len(payload.Values[key+".file_id"]) > 0 || len(payload.Files[key]) > 0 {
 			return true
 		}
 	}
 	return false
+}
+
+func hasXAICompatibleVideoNonVoiceAudioReference(payload xaiCompatibleVideoPayload) bool {
+	for _, key := range []string{"reference_audio", "reference_audios", "reference_voice"} {
+		if len(payload.Values[key+".url"]) > 0 || len(payload.Values[key+".file_id"]) > 0 || len(payload.Files[key]) > 0 {
+			return true
+		}
+		for _, value := range payload.Values[key] {
+			if isXAICompatibleVideoURLValue(value) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func isXAICompatibleVideoURLValue(value string) bool {
+	value = strings.ToLower(strings.TrimSpace(value))
+	return strings.HasPrefix(value, "http://") || strings.HasPrefix(value, "https://") || strings.HasPrefix(value, "data:") || strings.HasPrefix(value, "blob:")
+}
+
+func firstXAICompatibleVideoValue(payload xaiCompatibleVideoPayload, keys ...string) string {
+	for _, key := range keys {
+		for _, value := range payload.Values[key] {
+			if strings.TrimSpace(value) != "" {
+				return value
+			}
+		}
+	}
+	return ""
+}
+
+func collectXAICompatibleVideoImageReferences(payload xaiCompatibleVideoPayload) ([]map[string]string, []map[string]string, error) {
+	primaryKeys := []string{"image", "image_url", "input_url", "first_frame_url", "first_frame_image"}
+	referenceKeys := []string{"images", "image_urls", "input_urls", "input_reference", "input_reference[]", "reference_image", "reference_images", "reference_image_url", "reference_image_urls", "last_frame_url", "last_frame_image"}
+	primary, err := collectXAICompatibleVideoReferencesForKeys(payload, primaryKeys)
+	if err != nil {
+		return nil, nil, err
+	}
+	references, err := collectXAICompatibleVideoReferencesForKeys(payload, referenceKeys)
+	if err != nil {
+		return nil, nil, err
+	}
+	return primary, references, nil
+}
+
+func collectXAICompatibleVideoReferencesForKeys(payload xaiCompatibleVideoPayload, keys []string) ([]map[string]string, error) {
+	result := []map[string]string{}
+	for _, key := range keys {
+		for _, value := range payload.Values[key] {
+			appendXAICompatibleVideoReference(&result, "url", value)
+		}
+		for _, value := range payload.Values[key+".url"] {
+			appendXAICompatibleVideoReference(&result, "url", value)
+		}
+		for _, value := range payload.Values[key+".file_id"] {
+			appendXAICompatibleVideoReference(&result, "file_id", value)
+		}
+		for _, file := range payload.Files[key] {
+			uri, err := xaiCompatibleVideoFileDataURI(file)
+			if err != nil {
+				return nil, err
+			}
+			appendXAICompatibleVideoReference(&result, "url", uri)
+		}
+	}
+	return result, nil
+}
+
+func appendXAICompatibleVideoReference(result *[]map[string]string, field string, value string) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return
+	}
+	*result = append(*result, map[string]string{field: value})
+}
+
+func xaiCompatibleVideoFileDataURI(file xaiCompatibleVideoFile) (string, error) {
+	contentType := normalizeXAICompatibleVideoContentType(file.ContentType, file.Data)
+	switch contentType {
+	case "image/jpeg", "image/png", "image/webp":
+		return "data:" + contentType + ";base64," + base64.StdEncoding.EncodeToString(file.Data), nil
+	default:
+		return "", errors.New("xAI 视频参考图片仅支持 JPEG、PNG 或 WebP")
+	}
+}
+
+func normalizeXAICompatibleVideoContentType(contentType string, data []byte) string {
+	value := strings.ToLower(strings.TrimSpace(strings.Split(contentType, ";")[0]))
+	if value == "" || value == "application/octet-stream" {
+		value = strings.ToLower(http.DetectContentType(data))
+	}
+	if value == "image/jpg" {
+		return "image/jpeg"
+	}
+	return value
+}
+
+func xaiCompatibleVideoVoiceReferences(payload xaiCompatibleVideoPayload) []map[string]string {
+	result := []map[string]string{}
+	for _, key := range []string{"voice_id", "reference_voice", "reference_audio", "reference_audios"} {
+		for _, value := range payload.Values[key] {
+			appendXAICompatibleVideoReference(&result, "voice_id", value)
+		}
+		for _, value := range payload.Values[key+".voice_id"] {
+			appendXAICompatibleVideoReference(&result, "voice_id", value)
+		}
+	}
+	return result
 }
 
 func normalizeXAICompatibleVideoAspectRatio(aspectRatio string, size string) string {
@@ -490,13 +701,13 @@ func parseVideoTaskPayload(payload []byte, modelName string) parsedVideoTaskPayl
 	}
 	data := normalizeVideoPayloadMap(root)
 	result := parsedVideoTaskPayload{
-		UpstreamTaskID:  firstNonEmpty(readStringPath(data, "task_id"), readStringPath(data, "taskId"), readStringPath(data, "id")),
+		UpstreamTaskID:  firstNonEmpty(readStringPath(data, "task_id"), readStringPath(data, "taskId"), readStringPath(data, "request_id"), readStringPath(data, "id")),
 		UpstreamVideoID: firstNonEmpty(readStringPath(data, "video_id"), readStringPath(data, "videoId")),
 		Status:          service.NormalizeVideoTaskStatus(firstNonEmpty(readStringPath(data, "status"), readStringPath(data, "state"))),
 		Progress:        readIntPath(data, "progress"),
 		Seconds:         firstNonEmpty(readStringPath(data, "seconds"), readStringPath(data, "duration")),
 		Size:            firstNonEmpty(readStringPath(data, "size"), readSizeFromDimensions(data)),
-		VideoURL:        firstNonEmpty(readStringPath(data, "video_url"), readStringPath(data, "url"), readStringPath(data, "remixed_from_video_id"), readStringPath(data, "output_url"), readStringPath(data, "download_url"), findFirstHTTPURL(data)),
+		VideoURL:        firstNonEmpty(readStringPath(data, "video.url"), readStringPath(data, "video_url"), readStringPath(data, "url"), readStringPath(data, "remixed_from_video_id"), readStringPath(data, "output_url"), readStringPath(data, "download_url"), findFirstHTTPURL(data)),
 		Error:           firstNonEmpty(readStringPath(data, "error.message"), readStringPath(data, "error")),
 		ErrorDetail:     "",
 	}
