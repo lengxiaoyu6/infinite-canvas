@@ -539,6 +539,9 @@ func resolveAIProxyPath(channel model.ModelChannel, modelName string, path strin
 		}
 		return path
 	}
+	if isXAICompatibleVideoModel(modelName) && path == "/videos" {
+		return "/videos/generations"
+	}
 	if isArkSeedanceVideo(channel.BaseURL, modelName) {
 		if path == "/videos" {
 			return "/contents/generations/tasks"

@@ -55,6 +55,6 @@ description: 当前版本已实现但仍需人工验证的变更项
 
 ## xAI Grok 视频参考素材
 
-- [ ] 使用 `openai` 协议渠道的 `grok-imagine-video` 并上传单张参考图时，后端请求进入上游且不再返回“xAI 视频模型暂不支持参考素材”。
+- [ ] 使用 `openai` 协议渠道的 `grok-imagine-video` 并上传单张参考图时，后端通过 `/videos/generations` 进入上游且不再返回“xAI 视频模型暂不支持参考素材”。
 - [ ] 使用多张参考图时，后端转换为 xAI `reference_images` 请求并能创建视频任务。
 - [ ] 使用参考视频或上传参考音频时，界面显示后端返回的明确错误信息。
