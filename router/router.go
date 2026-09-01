@@ -35,12 +35,20 @@ func New() *gin.Engine {
 	api.GET("/files/:id/content", func(c *gin.Context) {
 		handler.FileContent(c.Writer, c.Request, c.Param("id"))
 	})
+	api.POST("/ai/direct-request", gin.WrapF(handler.PrepareDirectAIRequest))
+	anonymousFiles := api.Group("/anonymous/files", middleware.AnonymousStorage)
+	anonymousFiles.POST("/session", func(c *gin.Context) { c.Status(http.StatusNoContent) })
+	anonymousFiles.POST("", gin.WrapF(handler.UploadFile))
+	anonymousFiles.DELETE("/:id", func(c *gin.Context) {
+		handler.DeleteFile(c.Writer, c.Request, c.Param("id"))
+	})
 	v1 := api.Group("/v1", middleware.UserAuth)
 	v1.POST("/images/generations", gin.WrapF(handler.AIImagesGenerations))
 	v1.POST("/images/edits", gin.WrapF(handler.AIImagesEdits))
 	v1.POST("/responses", gin.WrapF(handler.AIResponses))
 	v1.POST("/chat/completions", gin.WrapF(handler.AIChatCompletions))
 	v1.POST("/audio/speech", gin.WrapF(handler.AIAudioSpeech))
+	v1.GET("/tts/voices", gin.WrapF(handler.AITTSVoices))
 	v1.POST("/canvas/tasks/delete", gin.WrapF(handler.DeleteUserCanvasTasks))
 	v1.POST("/canvas/image-tasks", gin.WrapF(handler.CreateCanvasImageTask))
 	v1.GET("/canvas/image-tasks", gin.WrapF(handler.UserCanvasImageTasks))
@@ -73,11 +81,20 @@ func New() *gin.Engine {
 	v1.DELETE("/workflows/:id", func(c *gin.Context) {
 		handler.DeleteUserWorkflow(c.Writer, c.Request, c.Param("id"))
 	})
+	v1.GET("/agent-skills", gin.WrapF(handler.UserAgentSkills))
+	v1.POST("/agent-skills", gin.WrapF(handler.SaveUserAgentSkill))
+	v1.DELETE("/agent-skills/:id", func(c *gin.Context) {
+		handler.DeleteUserAgentSkill(c.Writer, c.Request, c.Param("id"))
+	})
 	v1.POST("/storage/measure", gin.WrapF(handler.MeasureUserStorageProvider))
 	v1.POST("/storage/senluopan-status", gin.WrapF(handler.CheckUserSenluopanAuth))
 	v1.POST("/files", gin.WrapF(handler.UploadFile))
+	v1.POST("/files/direct", gin.WrapF(handler.RegisterDirectFile))
 	v1.DELETE("/files/:id", func(c *gin.Context) {
 		handler.DeleteFile(c.Writer, c.Request, c.Param("id"))
+	})
+	v1.DELETE("/files/:id/record", func(c *gin.Context) {
+		handler.DeleteDirectFileRecord(c.Writer, c.Request, c.Param("id"))
 	})
 	v1.GET("/user-config", gin.WrapF(handler.UserConfig))
 	v1.POST("/user-config/model", gin.WrapF(handler.SaveUserModelConfig))
@@ -104,6 +121,10 @@ func New() *gin.Engine {
 	v1.POST("/user-data/assets", gin.WrapF(handler.SaveUserAssetData))
 	api.GET("/proxy-image", gin.WrapF(handler.ProxyImage))
 	api.GET("/prompts", middleware.OptionalAuth, gin.WrapF(handler.Prompts))
+	api.GET("/agent-skills", gin.WrapF(handler.AgentSkills))
+	api.GET("/agent-skills/:id/file", func(c *gin.Context) {
+		handler.AgentSkillFile(c.Writer, c.Request, c.Param("id"))
+	})
 	api.GET("/assets", middleware.OptionalAuth, gin.WrapF(handler.Assets))
 	api.POST("/admin/login", gin.WrapF(handler.AdminLogin))
 
@@ -137,6 +158,14 @@ func New() *gin.Engine {
 	admin.POST("/prompts/batch-delete", gin.WrapF(handler.AdminDeletePrompts))
 	admin.DELETE("/prompts/:id", func(c *gin.Context) {
 		handler.AdminDeletePrompt(c.Writer, c.Request, c.Param("id"))
+	})
+	admin.GET("/agent-skills", gin.WrapF(handler.AdminAgentSkills))
+	admin.GET("/agent-skills/:id/files", func(c *gin.Context) {
+		handler.AdminAgentSkillFiles(c.Writer, c.Request, c.Param("id"))
+	})
+	admin.POST("/agent-skills", gin.WrapF(handler.AdminSaveAgentSkill))
+	admin.DELETE("/agent-skills/:id", func(c *gin.Context) {
+		handler.AdminDeleteAgentSkill(c.Writer, c.Request, c.Param("id"))
 	})
 	admin.GET("/assets", gin.WrapF(handler.AdminAssets))
 	admin.POST("/assets", gin.WrapF(handler.AdminSaveAsset))

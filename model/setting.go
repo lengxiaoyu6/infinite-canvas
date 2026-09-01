@@ -7,6 +7,7 @@ type SettingKey string
 const (
 	SettingKeyPublic  SettingKey = "public"
 	SettingKeyPrivate SettingKey = "private"
+	SettingKeyAgentSkillsInitialized SettingKey = "agent-skills-initialized"
 
 	StorageProviderTypeS3     = "s3"
 	StorageProviderTypeWebDAV = "webdav"
@@ -57,16 +58,15 @@ type SystemPromptSetting struct {
 }
 
 type PublicModelChannelInfo struct {
-	ID              string   `json:"id"`
-	Protocol        string   `json:"protocol"`
-	Name            string   `json:"name"`
-	BaseURL         string   `json:"baseUrl"`
-	Models          []string `json:"models"`
-	Weight          int      `json:"weight"`
-	Timeout         int      `json:"timeout"`
-	Enabled         bool     `json:"enabled"`
-	Remark          string   `json:"remark"`
-	HasSystemAPIKey bool     `json:"hasSystemApiKey"`
+	ID       string   `json:"id"`
+	Protocol string   `json:"protocol"`
+	Name     string   `json:"name"`
+	BaseURL  string   `json:"baseUrl"`
+	Models   []string `json:"models"`
+	Weight   int      `json:"weight"`
+	Timeout  int      `json:"timeout"`
+	Enabled  bool     `json:"enabled"`
+	Remark   string   `json:"remark"`
 }
 
 // PublicSetting 公开配置。

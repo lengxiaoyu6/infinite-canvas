@@ -6,7 +6,7 @@ import { usePathname } from "next/navigation";
 
 import { fetchUserConfig } from "@/services/api/user-config";
 import { defaultUserStorageProvider, defaultUserWebDAVStorageProvider, saveUserStorageProvider, saveUserWebDAVStorageProvider } from "@/services/image-storage";
-import { useConfigStore, useIsModelConfigReady } from "@/stores/use-config-store";
+import { useConfigStore, type AiConfig } from "@/stores/use-config-store";
 import { useUserStore } from "@/stores/use-user-store";
 
 export function ClientRootInit({ children }: { children: ReactNode }) {
@@ -59,8 +59,12 @@ export function ClientRootInit({ children }: { children: ReactNode }) {
             .then((payload) => {
                 const syncS3 = payload.modelConfig?.syncStorageConfig === true;
                 const syncWebDAV = payload.modelConfig?.syncWebDAVStorageConfig === true;
-                applyUserModelConfig(userId, loadVersion, payload.modelConfig);
-                if (canceled) return;
+                if (payload.modelConfig) {
+                    Object.entries(payload.modelConfig)
+                        .forEach(([key, value]) => updateConfig(key as keyof AiConfig, value as never));
+                }
+                updateConfig("syncStorageConfig", syncS3);
+                updateConfig("syncWebDAVStorageConfig", syncWebDAV);
                 if (syncS3 && payload.storageProvider?.s3) {
                     saveUserStorageProvider({
                         ...defaultUserStorageProvider(),

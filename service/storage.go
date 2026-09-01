@@ -15,6 +15,7 @@ import (
 	"net/http"
 	"net/url"
 	"path"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -35,11 +36,29 @@ type UploadedStorageObject struct {
 	MimeType   string `json:"mimeType"`
 }
 
+type DirectStorageObjectInput struct {
+	Provider  StorageObjectProviderInput `json:"provider"`
+	ObjectKey string                     `json:"objectKey"`
+	MimeType  string                     `json:"mimeType"`
+	Bytes     int64                      `json:"bytes"`
+}
+
 // DownloadedStorageObject 下载存储对象结果。
 type DownloadedStorageObject struct {
-	Object      model.StorageObject
-	Data        []byte
-	RedirectURL string
+	Object        model.StorageObject
+	Stream        io.ReadCloser
+	StatusCode    int
+	ContentLength int64
+	ContentRange  string
+	AcceptRanges  bool
+}
+
+type storageObjectStream struct {
+	Body          io.ReadCloser
+	StatusCode    int
+	ContentLength int64
+	ContentRange  string
+	AcceptRanges  bool
 }
 
 // StorageCapacityResult 存储容量统计结果。
@@ -128,65 +147,6 @@ func StorageObjectInfo(id string) (model.StorageObject, error) {
 	return EnsureStorageObjectPublicURL(id)
 }
 
-func isProjectFileContentURL(value string) bool {
-	value = strings.TrimSpace(value)
-	if value == "" {
-		return false
-	}
-	parsed, err := url.Parse(value)
-	if err != nil {
-		return false
-	}
-	pathValue := strings.TrimRight(parsed.Path, "/")
-	if parsed.Scheme == "" && parsed.Host == "" {
-		pathValue = strings.TrimSpace(value)
-		if !strings.HasPrefix(pathValue, "/") {
-			pathValue = "/" + pathValue
-		}
-		pathValue = strings.TrimRight(pathValue, "/")
-	}
-	return strings.HasPrefix(pathValue, "/api/files/") && strings.HasSuffix(pathValue, "/content")
-}
-
-// EnsureStorageObjectPublicURL 为已保存的 WebDAV 对象补齐森络盘直链。
-func EnsureStorageObjectPublicURL(id string) (model.StorageObject, error) {
-	object, err := repository.GetStorageObject(id)
-	if err != nil {
-		return model.StorageObject{}, err
-	}
-	if publicURL := strings.TrimSpace(object.PublicURL); publicURL != "" && !isProjectFileContentURL(publicURL) {
-		return object, nil
-	}
-	provider, ok := storageProviderForSavedObject(object)
-	if !ok || provider.Type != model.StorageProviderTypeWebDAV || !senluopanProviderConfigured(provider) {
-		return object, nil
-	}
-	link, linkID, err := createSenluopanDirectLink(provider, object.ObjectKey)
-	if err != nil {
-		log.Printf("senluopan direct link ensure failed provider=%s object=%s err=%v", provider.Name, object.ObjectKey, err)
-		return object, nil
-	}
-	object.PublicURL = link
-	object.DirectLinkID = linkID
-	if err := repository.UpdateStorageObjectPublicLink(object.ID, link, linkID); err != nil {
-		return object, err
-	}
-	return object, nil
-}
-
-func storageProviderForSavedObject(object model.StorageObject) (model.StorageProvider, bool) {
-	providers := []model.StorageProvider{}
-	if object.CreatedBy != "" && object.CreatedBy != "anonymous" {
-		if config, found, err := repository.GetUserConfig(object.CreatedBy); err == nil && found {
-			providers = append(providers, userStorageProvidersForOwner(config.StorageProvider, object.CreatedBy)...)
-		}
-	}
-	if settings, err := repository.GetSettings(); err == nil {
-		providers = append(providers, normalizePrivateStorageSetting(settings.Private.Storage).Providers...)
-	}
-	return findStorageProviderForObject(object, providers)
-}
-
 // SaveCurrentUserStorageProvider 保存用户配置的存储提供商。
 func SaveCurrentUserStorageProvider(ctx context.Context, incoming UserStorageProviders) (UserConfigPayload, error) {
 	user, ok := UserFromContext(ctx)
@@ -206,28 +166,6 @@ func SaveCurrentUserStorageProvider(ctx context.Context, incoming UserStoragePro
 	if incoming.WebDAV != nil {
 		provider := *incoming.WebDAV
 		provider.Type = model.StorageProviderTypeWebDAV
-		if saved := providers.WebDAV; sameUserSenluopanProvider(saved, normalizeUserStorageProviderForOwner(provider, user.ID)) {
-			if strings.TrimSpace(provider.APIEmail) == "" {
-				provider.APIEmail = saved.APIEmail
-			}
-			if strings.TrimSpace(provider.APIPassword) == "" {
-				provider.APIPassword = saved.APIPassword
-			}
-			if strings.TrimSpace(provider.APIEmail) == strings.TrimSpace(saved.APIEmail) {
-				if strings.TrimSpace(provider.APIAccessToken) == "" {
-					provider.APIAccessToken = saved.APIAccessToken
-				}
-				if strings.TrimSpace(provider.APIRefreshToken) == "" {
-					provider.APIRefreshToken = saved.APIRefreshToken
-				}
-				if provider.APIAccessExpires <= 0 {
-					provider.APIAccessExpires = saved.APIAccessExpires
-				}
-				if provider.APIRefreshExpires <= 0 {
-					provider.APIRefreshExpires = saved.APIRefreshExpires
-				}
-			}
-		}
 		providers.WebDAV = &provider
 	}
 	if err := validateUserStorageProviderTypes(providers); err != nil {
@@ -298,7 +236,6 @@ func UploadStorageObjectWithProvider(ctx context.Context, filename string, conte
 	var provider model.StorageProvider
 	if usingUserProvider {
 		provider = normalizeUserStorageProvider(*providerInput, ctx)
-		provider = mergePersistedSenluopanCredentials(provider)
 		if !provider.Enabled || !storageProviderConfigured(provider) {
 			return UploadedStorageObject{}, errors.New("用户对象存储配置不完整")
 		}
@@ -351,6 +288,53 @@ func UploadStorageObjectWithProvider(ctx context.Context, filename string, conte
 	return UploadedStorageObject{ID: objectID, URL: url, StorageKey: "server:" + objectID, Bytes: int64(len(data)), MimeType: contentType}, nil
 }
 
+// RegisterDirectStorageObject 登记浏览器已直传至用户 WebDAV 的对象。
+func RegisterDirectStorageObject(ctx context.Context, input DirectStorageObjectInput) (UploadedStorageObject, error) {
+	user, ok := UserFromContext(ctx)
+	if !ok || user.ID == "" || user.Role == model.UserRoleGuest {
+		return UploadedStorageObject{}, errors.New("请先登录")
+	}
+	settings, err := repository.GetSettings()
+	if err != nil {
+		return UploadedStorageObject{}, err
+	}
+	storage := normalizePrivateStorageSetting(settings.Private.Storage)
+	if !storage.AllowUserProvider || input.Provider.Type != model.StorageProviderTypeWebDAV {
+		return UploadedStorageObject{}, errors.New("用户 WebDAV 未启用")
+	}
+	provider := normalizeUserStorageProvider(input.Provider, ctx)
+	if !provider.Enabled || !storageProviderConfigured(provider) {
+		return UploadedStorageObject{}, errors.New("用户 WebDAV 配置不完整")
+	}
+	objectKey, err := cleanStoragePath(input.ObjectKey)
+	if err != nil {
+		return UploadedStorageObject{}, err
+	}
+	prefix := strings.Trim(path.Join(provider.PathPrefix, user.ID), "/") + "/"
+	if !strings.HasPrefix(objectKey, prefix) {
+		return UploadedStorageObject{}, errors.New("WebDAV 对象路径无效")
+	}
+	contentType := strings.TrimSpace(input.MimeType)
+	if contentType == "" {
+		contentType = "application/octet-stream"
+	}
+	if input.Bytes < 0 {
+		return UploadedStorageObject{}, errors.New("文件大小无效")
+	}
+	objectID := uuid.NewString()
+	object := model.StorageObject{
+		ID: objectID, ProviderID: provider.ID, ObjectKey: objectKey, MimeType: contentType,
+		Bytes: input.Bytes, Direct: true, CreatedBy: user.ID, CreatedAt: now(),
+	}
+	if _, err := repository.SaveStorageObject(object); err != nil {
+		return UploadedStorageObject{}, err
+	}
+	return UploadedStorageObject{
+		ID: objectID, URL: "/api/files/" + objectID + "/content?direct=1", StorageKey: "server:" + objectID,
+		Bytes: input.Bytes, MimeType: contentType,
+	}, nil
+}
+
 // DeleteStorageObject 删除存储对象。
 func DeleteStorageObject(ctx context.Context, id string, providerInput *StorageObjectProviderInput) error {
 	object, err := repository.GetStorageObject(id)
@@ -375,20 +359,30 @@ func DeleteStorageObject(ctx context.Context, id string, providerInput *StorageO
 		}
 	}
 	if providerInput != nil && storage.AllowUserProvider {
-		provider := normalizeUserStorageProvider(*providerInput, ctx)
-		providers = append([]model.StorageProvider{mergePersistedSenluopanCredentials(provider)}, providers...)
+		providers = append([]model.StorageProvider{normalizeUserStorageProvider(*providerInput, ctx)}, providers...)
 	}
 	provider, ok := findStorageProviderForObject(object, providers)
 	if !ok {
 		return errors.New("对象存储配置不存在")
 	}
-	if provider.Type == model.StorageProviderTypeWebDAV && object.DirectLinkID != "" {
-		if err := deleteSenluopanDirectLink(provider, object.DirectLinkID); err != nil {
-			log.Printf("senluopan direct link delete failed provider=%s object=%s err=%v", provider.Name, object.ObjectKey, err)
-		}
-	}
 	if err := deleteStorageObjectData(provider, object.ObjectKey); err != nil {
 		return err
+	}
+	return repository.DeleteStorageObjectRecord(id)
+}
+
+// DeleteDirectStorageObjectRecord 删除已由浏览器直接删除的 WebDAV 对象索引。
+func DeleteDirectStorageObjectRecord(ctx context.Context, id string) error {
+	object, err := repository.GetStorageObject(id)
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	user, ok := UserFromContext(ctx)
+	if !ok || user.ID == "" || object.CreatedBy != user.ID || !object.Direct {
+		return errors.New("无权删除该对象记录")
 	}
 	return repository.DeleteStorageObjectRecord(id)
 }
@@ -420,35 +414,11 @@ func MeasureAdminStorageProvider(index int, providerInput *model.StorageProvider
 		provider = normalizeStorageProvider(*providerInput)
 		provider.SecretAccessKey = storage.Providers[index].SecretAccessKey
 		provider.Password = storage.Providers[index].Password
-		provider.APIAccessToken = storage.Providers[index].APIAccessToken
-		provider.APIRefreshToken = storage.Providers[index].APIRefreshToken
-		provider.APIPassword = storage.Providers[index].APIPassword
-		provider.APIEmail = storage.Providers[index].APIEmail
-		provider.APIAccessExpires = storage.Providers[index].APIAccessExpires
-		provider.APIRefreshExpires = storage.Providers[index].APIRefreshExpires
 		if strings.TrimSpace(providerInput.SecretAccessKey) != "" {
 			provider.SecretAccessKey = providerInput.SecretAccessKey
 		}
 		if strings.TrimSpace(providerInput.Password) != "" {
 			provider.Password = providerInput.Password
-		}
-		if strings.TrimSpace(providerInput.APIAccessToken) != "" {
-			provider.APIAccessToken = providerInput.APIAccessToken
-		}
-		if strings.TrimSpace(providerInput.APIRefreshToken) != "" {
-			provider.APIRefreshToken = providerInput.APIRefreshToken
-		}
-		if strings.TrimSpace(providerInput.APIPassword) != "" {
-			provider.APIPassword = providerInput.APIPassword
-		}
-		if strings.TrimSpace(providerInput.APIEmail) != "" {
-			provider.APIEmail = providerInput.APIEmail
-		}
-		if providerInput.APIAccessExpires > 0 {
-			provider.APIAccessExpires = providerInput.APIAccessExpires
-		}
-		if providerInput.APIRefreshExpires > 0 {
-			provider.APIRefreshExpires = providerInput.APIRefreshExpires
 		}
 	}
 	bytes, err := measureStorageProvider(provider)
@@ -544,7 +514,7 @@ func RefreshStorageCapacityScheduler() {
 }
 
 // DownloadStorageObject 下载存储对象内容。
-func DownloadStorageObject(id string) (DownloadedStorageObject, error) {
+func DownloadStorageObject(id string, rangeHeader string) (DownloadedStorageObject, error) {
 	object, err := repository.GetStorageObject(id)
 	if err != nil {
 		return DownloadedStorageObject{}, err
@@ -560,40 +530,103 @@ func DownloadStorageObject(id string) (DownloadedStorageObject, error) {
 		providers = append(providers, normalizePrivateStorageSetting(settings.Private.Storage).Providers...)
 	}
 	if provider, ok := findStorageProviderForObject(object, providers); ok && storageProviderConfigured(provider) {
-		if data, readErr := getStorageObject(provider, object.ObjectKey); readErr == nil {
-			return DownloadedStorageObject{Object: object, Data: data}, nil
+		var stream storageObjectStream
+		var readErr error
+		switch provider.Type {
+		case model.StorageProviderTypeS3:
+			stream, readErr = getS3ObjectStream(provider, object.ObjectKey, rangeHeader)
+		case model.StorageProviderTypeWebDAV:
+			stream, readErr = getWebDAVObjectStream(provider, object.ObjectKey, object.Bytes, rangeHeader)
+		}
+		if readErr == nil && stream.Body != nil {
+			return downloadedStorageObject(object, stream), nil
 		}
 	}
 
-	publicURL := strings.TrimSpace(object.PublicURL)
-	if publicURL == "" || isProjectFileContentURL(publicURL) {
-		if refreshed, refreshErr := EnsureStorageObjectPublicURL(id); refreshErr == nil {
-			object = refreshed
-			publicURL = strings.TrimSpace(refreshed.PublicURL)
-		}
-	}
-	if publicURL != "" && !isProjectFileContentURL(publicURL) {
-		request, err := http.NewRequest(http.MethodGet, publicURL, nil)
+	if object.PublicURL != "" {
+		request, err := http.NewRequest(http.MethodGet, object.PublicURL, nil)
 		if err != nil {
 			return DownloadedStorageObject{}, err
+		}
+		if strings.TrimSpace(rangeHeader) != "" {
+			request.Header.Set("Range", rangeHeader)
 		}
 		response, err := SafeProxyHTTPClient().Do(request)
 		if err != nil {
 			return DownloadedStorageObject{}, err
 		}
-		defer response.Body.Close()
-		if response.StatusCode < 200 || response.StatusCode >= 300 {
+		if !storageDownloadStatus(response.StatusCode) {
 			body, _ := io.ReadAll(io.LimitReader(response.Body, 4096))
+			_ = response.Body.Close()
 			return DownloadedStorageObject{}, fmt.Errorf("对象存储读取失败: %s %s", response.Status, string(body))
 		}
-		data, err := io.ReadAll(response.Body)
-		if err != nil {
-			return DownloadedStorageObject{}, err
-		}
-		return DownloadedStorageObject{Object: object, Data: data}, nil
+		return downloadedStorageObject(object, httpStorageObjectStream(response, response.Header.Get("Accept-Ranges") != "")), nil
 	}
 
 	return DownloadedStorageObject{}, errors.New("无法读取对象存储文件")
+}
+
+func downloadedStorageObject(object model.StorageObject, stream storageObjectStream) DownloadedStorageObject {
+	return DownloadedStorageObject{
+		Object: object, Stream: stream.Body, StatusCode: stream.StatusCode,
+		ContentLength: stream.ContentLength, ContentRange: stream.ContentRange, AcceptRanges: stream.AcceptRanges,
+	}
+}
+
+func httpStorageObjectStream(response *http.Response, acceptRanges bool) storageObjectStream {
+	return storageObjectStream{
+		Body: response.Body, StatusCode: response.StatusCode, ContentLength: response.ContentLength,
+		ContentRange: response.Header.Get("Content-Range"), AcceptRanges: acceptRanges,
+	}
+}
+
+func storageDownloadStatus(status int) bool {
+	return status >= 200 && status < 300 || status == http.StatusRequestedRangeNotSatisfiable
+}
+
+type storageByteRange struct {
+	offset int64
+	length int64
+}
+
+func parseStorageByteRange(value string, size int64) (storageByteRange, bool) {
+	value = strings.TrimSpace(value)
+	if size <= 0 || !strings.HasPrefix(strings.ToLower(value), "bytes=") {
+		return storageByteRange{}, false
+	}
+	value = strings.TrimSpace(value[len("bytes="):])
+	if value == "" || strings.Contains(value, ",") {
+		return storageByteRange{}, false
+	}
+	parts := strings.SplitN(value, "-", 2)
+	if len(parts) != 2 {
+		return storageByteRange{}, false
+	}
+	if parts[0] == "" {
+		suffix, err := strconv.ParseInt(parts[1], 10, 64)
+		if err != nil || suffix <= 0 {
+			return storageByteRange{}, false
+		}
+		if suffix > size {
+			suffix = size
+		}
+		return storageByteRange{offset: size - suffix, length: suffix}, true
+	}
+	start, err := strconv.ParseInt(parts[0], 10, 64)
+	if err != nil || start < 0 || start >= size {
+		return storageByteRange{}, false
+	}
+	end := size - 1
+	if parts[1] != "" {
+		end, err = strconv.ParseInt(parts[1], 10, 64)
+		if err != nil || end < start {
+			return storageByteRange{}, false
+		}
+		if end >= size {
+			end = size - 1
+		}
+	}
+	return storageByteRange{offset: start, length: end - start + 1}, true
 }
 
 // selectStorageProvider 按权重选择一个启用的存储提供商。
@@ -634,17 +667,6 @@ func putStorageObject(provider model.StorageProvider, objectKey string, contentT
 		return putWebDAVObject(provider, objectKey, data)
 	default:
 		return errors.New("存储类型不支持")
-	}
-}
-
-func getStorageObject(provider model.StorageProvider, objectKey string) ([]byte, error) {
-	switch provider.Type {
-	case model.StorageProviderTypeS3:
-		return getS3Object(provider, objectKey)
-	case model.StorageProviderTypeWebDAV:
-		return getWebDAVObject(provider, objectKey)
-	default:
-		return nil, errors.New("存储类型不支持")
 	}
 }
 
@@ -689,21 +711,24 @@ func putS3Object(provider model.StorageProvider, objectKey string, contentType s
 	return nil
 }
 
-// getS3Object 从 S3 兼容存储下载对象。
-func getS3Object(provider model.StorageProvider, objectKey string) ([]byte, error) {
+// getS3ObjectStream 从 S3 兼容存储流式读取对象。
+func getS3ObjectStream(provider model.StorageProvider, objectKey string, rangeHeader string) (storageObjectStream, error) {
 	request, err := newS3Request(http.MethodGet, provider, objectKey, nil, 0)
 	if err != nil {
-		return nil, err
+		return storageObjectStream{}, err
+	}
+	if strings.TrimSpace(rangeHeader) != "" {
+		request.Header.Set("Range", rangeHeader)
 	}
 	response, err := SafeProxyHTTPClient().Do(request)
 	if err != nil {
-		return nil, err
+		return storageObjectStream{}, err
 	}
-	defer response.Body.Close()
-	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		return nil, fmt.Errorf("对象读取失败: %s", response.Status)
+	if !storageDownloadStatus(response.StatusCode) {
+		_ = response.Body.Close()
+		return storageObjectStream{}, fmt.Errorf("对象读取失败: %s", response.Status)
 	}
-	return io.ReadAll(response.Body)
+	return httpStorageObjectStream(response, true), nil
 }
 
 // deleteS3Object 从 S3 兼容存储删除对象。
@@ -853,144 +878,21 @@ func normalizeUserStorageProviderForOwner(input StorageObjectProviderInput, owne
 		enabled = *input.Enabled
 	}
 	return normalizeStorageProvider(model.StorageProvider{
-		Name:              input.Name,
-		Type:              input.Type,
-		Endpoint:          input.Endpoint,
-		APIEndpoint:       input.APIEndpoint,
-		APIAccessToken:    input.APIAccessToken,
-		APIRefreshToken:   input.APIRefreshToken,
-		APIEmail:          input.APIEmail,
-		APIPassword:       input.APIPassword,
-		APIAccessExpires:  input.APIAccessExpires,
-		APIRefreshExpires: input.APIRefreshExpires,
-		Region:            input.Region,
-		Bucket:            input.Bucket,
-		AccessKeyID:       input.AccessKeyID,
-		SecretAccessKey:   input.SecretAccessKey,
-		PublicBaseURL:     input.PublicBaseURL,
-		PathPrefix:        input.PathPrefix,
-		Username:          input.Username,
-		Password:          input.Password,
-		Weight:            1,
-		Enabled:           enabled,
-		OwnerUserID:       owner,
+		Name:            input.Name,
+		Type:            input.Type,
+		Endpoint:        input.Endpoint,
+		Region:          input.Region,
+		Bucket:          input.Bucket,
+		AccessKeyID:     input.AccessKeyID,
+		SecretAccessKey: input.SecretAccessKey,
+		PublicBaseURL:   input.PublicBaseURL,
+		PathPrefix:      input.PathPrefix,
+		Username:        input.Username,
+		Password:        input.Password,
+		Weight:          1,
+		Enabled:         enabled,
+		OwnerUserID:     owner,
 	})
-}
-
-func mergePersistedSenluopanCredentials(provider model.StorageProvider) model.StorageProvider {
-	if provider.Type != model.StorageProviderTypeWebDAV || strings.TrimSpace(provider.OwnerUserID) == "" || provider.OwnerUserID == "anonymous" {
-		return provider
-	}
-	config, found, err := repository.GetUserConfig(provider.OwnerUserID)
-	if err != nil || !found {
-		return provider
-	}
-	inputs := readUserStorageProviders(config.StorageProvider)
-	var saved *StorageObjectProviderInput
-	if provider.Type == model.StorageProviderTypeWebDAV {
-		saved = inputs.WebDAV
-	}
-	if !sameUserSenluopanProvider(saved, provider) {
-		return provider
-	}
-	if strings.TrimSpace(provider.APIEmail) == "" {
-		provider.APIEmail = saved.APIEmail
-	}
-	if strings.TrimSpace(provider.APIPassword) == "" {
-		provider.APIPassword = saved.APIPassword
-	}
-	if strings.TrimSpace(provider.APIEmail) == strings.TrimSpace(saved.APIEmail) {
-		if strings.TrimSpace(provider.APIAccessToken) == "" {
-			provider.APIAccessToken = saved.APIAccessToken
-		}
-		if strings.TrimSpace(provider.APIRefreshToken) == "" {
-			provider.APIRefreshToken = saved.APIRefreshToken
-		}
-		if provider.APIAccessExpires <= 0 {
-			provider.APIAccessExpires = saved.APIAccessExpires
-		}
-		if provider.APIRefreshExpires <= 0 {
-			provider.APIRefreshExpires = saved.APIRefreshExpires
-		}
-	}
-	return provider
-}
-
-func persistSenluopanProvider(provider model.StorageProvider) (bool, error) {
-	if provider.Type != model.StorageProviderTypeWebDAV {
-		return false, nil
-	}
-	if owner := strings.TrimSpace(provider.OwnerUserID); owner != "" && owner != "anonymous" {
-		config, _, err := repository.GetUserConfig(owner)
-		if err != nil {
-			return false, err
-		}
-		if config.UserID == "" {
-			config.UserID = owner
-			config.CreatedAt = now()
-		}
-		providers := readUserStorageProviders(config.StorageProvider)
-		if providers.WebDAV == nil {
-			input := StorageObjectProviderInput{Type: model.StorageProviderTypeWebDAV, Name: provider.Name, Endpoint: provider.Endpoint, PathPrefix: provider.PathPrefix}
-			providers.WebDAV = &input
-		} else if !sameUserSenluopanProvider(providers.WebDAV, provider) {
-			return false, nil
-		}
-		copySenluopanCredentials(providers.WebDAV, provider)
-		raw, err := json.Marshal(providers)
-		if err != nil {
-			return false, err
-		}
-		config.StorageProvider = string(raw)
-		config.UpdatedAt = now()
-		_, err = repository.SaveUserConfig(config)
-		return true, err
-	}
-	settings, err := repository.GetSettings()
-	if err != nil {
-		return false, err
-	}
-	settings = normalizeSettings(settings)
-	for index := range settings.Private.Storage.Providers {
-		current := settings.Private.Storage.Providers[index]
-		if current.ID != provider.ID && (current.Type != provider.Type || current.Name != provider.Name || current.Endpoint != provider.Endpoint || current.PathPrefix != provider.PathPrefix) {
-			continue
-		}
-		copySenluopanProviderCredentials(&settings.Private.Storage.Providers[index], provider)
-		_, err = repository.SaveSettings(settings, now())
-		return true, err
-	}
-	return false, nil
-}
-
-func sameUserSenluopanProvider(saved *StorageObjectProviderInput, provider model.StorageProvider) bool {
-	if saved == nil {
-		return false
-	}
-	input := *saved
-	input.Type = model.StorageProviderTypeWebDAV
-	current := normalizeUserStorageProviderForOwner(input, provider.OwnerUserID)
-	return current.Endpoint == provider.Endpoint && current.PathPrefix == provider.PathPrefix && current.APIEndpoint == provider.APIEndpoint
-}
-
-func copySenluopanCredentials(target *StorageObjectProviderInput, provider model.StorageProvider) {
-	target.APIEndpoint = provider.APIEndpoint
-	target.APIAccessToken = provider.APIAccessToken
-	target.APIRefreshToken = provider.APIRefreshToken
-	target.APIEmail = provider.APIEmail
-	target.APIPassword = provider.APIPassword
-	target.APIAccessExpires = provider.APIAccessExpires
-	target.APIRefreshExpires = provider.APIRefreshExpires
-}
-
-func copySenluopanProviderCredentials(target *model.StorageProvider, provider model.StorageProvider) {
-	target.APIEndpoint = provider.APIEndpoint
-	target.APIAccessToken = provider.APIAccessToken
-	target.APIRefreshToken = provider.APIRefreshToken
-	target.APIEmail = provider.APIEmail
-	target.APIPassword = provider.APIPassword
-	target.APIAccessExpires = provider.APIAccessExpires
-	target.APIRefreshExpires = provider.APIRefreshExpires
 }
 
 func userStorageProvidersForOwner(raw string, owner string) []model.StorageProvider {

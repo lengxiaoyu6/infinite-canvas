@@ -1,6 +1,6 @@
 "use client";
 
-import { getImageRequestUrls } from "@/services/image-storage";
+import { getProxyUrl } from "@/services/image-storage";
 
 export type ImageCropRect = {
     x: number;
@@ -49,23 +49,26 @@ export async function cropDataUrl(dataUrl: string, crop?: ImageCropRect) {
 }
 
 export async function splitDataUrl(dataUrl: string, params: ImageSplitParams): Promise<ImageSplitPiece[]> {
-    return withLoadedImage(dataUrl, (image) => {
-        const xCuts = buildSplitCuts(params.verticalLines, image.width);
-        const yCuts = buildSplitCuts(params.horizontalLines, image.height);
-        const pieces: ImageSplitPiece[] = [];
+    const image = await loadImage(dataUrl);
+    const xCuts = buildSplitCuts(params.verticalLines, image.width);
+    const yCuts = buildSplitCuts(params.horizontalLines, image.height);
+    const pieces: ImageSplitPiece[] = [];
 
-        for (let row = 0; row < yCuts.length - 1; row += 1) {
-            const sy = yCuts[row];
-            const sh = yCuts[row + 1] - sy;
-            for (let column = 0; column < xCuts.length - 1; column += 1) {
-                const sx = xCuts[column];
-                const sw = xCuts[column + 1] - sx;
-                pieces.push({ row, column, dataUrl: drawCrop(image, sx, sy, sw, sh) });
-            }
+    for (let row = 0; row < yCuts.length - 1; row += 1) {
+        const sy = yCuts[row];
+        const sh = yCuts[row + 1] - sy;
+        for (let column = 0; column < xCuts.length - 1; column += 1) {
+            const sx = xCuts[column];
+            const sw = xCuts[column + 1] - sx;
+            pieces.push({ row, column, dataUrl: drawCrop(image, sx, sy, sw, sh) });
         }
 
         return pieces;
     });
+}
+
+function buildSplitCuts(lines: number[], size: number) {
+    return [0, ...lines.map((line) => Math.round(line * size)).filter((line) => line > 0 && line < size).sort((a, b) => a - b), size];
 }
 
 function buildSplitCuts(lines: number[], size: number) {
@@ -185,7 +188,11 @@ async function withLoadedImage<T>(dataUrl: string, render: (image: HTMLImageElem
 function loadImageFromSrc(src: string) {
     return new Promise<HTMLImageElement>((resolve, reject) => {
         const image = new Image();
-        if (src.startsWith("http")) image.crossOrigin = "anonymous";
+        let src = dataUrl;
+        if (dataUrl.startsWith("http")) {
+            src = getProxyUrl(dataUrl);
+            image.crossOrigin = "anonymous";
+        }
         image.onload = () => resolve(image);
         image.onerror = (err) => reject(err);
         image.src = src;

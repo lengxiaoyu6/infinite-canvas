@@ -30,7 +30,7 @@ import { App, Button, Checkbox, Drawer, Empty, Image, Input, Modal, Segmented, T
 import localforage from "localforage";
 import { saveAs } from "file-saver";
 
-import { ImageSettingsPanel, imageFormatLabel, imageQualityLabel, imageSizeLabel } from "@/components/image-settings-panel";
+import { ImageSettingsPanel, imageFormatLabel, imageQualityLabel, imageSizeLabel, imageSizeOptions } from "@/components/image-settings-panel";
 import { ModelPicker } from "@/components/model-picker";
 import { PromptSelectDialog } from "@/components/prompts/prompt-select-dialog";
 import { AssetPickerModal, type InsertAssetPayload } from "@/app/(user)/canvas/components/asset-picker-modal";
@@ -678,7 +678,17 @@ export default function ImagePage() {
 
     const deleteBackendImageTasks = async (items: GenerationLog[]) => {
         if (!token) return;
-        await Promise.all(items.map((item) => deleteCanvasImageTask(imageTaskConfig(), item.task).catch(() => undefined)));
+        const tasks = Array.from(
+            new Map(
+                items.flatMap((item) => {
+                    const taskId = item.task?.parent_task_id || item.task?.id;
+                    return item.task && taskId
+                        ? [[taskId, { ...item.task, id: taskId }] as const]
+                        : [];
+                }),
+            ).values(),
+        );
+        await Promise.all(tasks.map((task) => deleteCanvasImageTask(imageTaskConfig(), task).catch(() => undefined)));
     };
 
     const deleteAccountImageLogs = async (items: GenerationLog[]) => {
@@ -727,7 +737,25 @@ export default function ImagePage() {
         });
     };
 
+    const persistLoggedOutLogImages = async (log: GenerationLog): Promise<GenerationLog> => {
+        const images = log.images || [];
+        if (!images.some((image) => !image.storageKey && image.dataUrl?.startsWith("data:image/"))) return log;
+        const persistedImages = await Promise.all(
+            images.map(async (image) => {
+                if (image.storageKey || !image.dataUrl?.startsWith("data:image/")) return image;
+                try {
+                    const stored = await uploadImage(image.dataUrl, { localOnly: true });
+                    return { ...image, dataUrl: stored.url, storageKey: stored.storageKey, width: stored.width || image.width, height: stored.height || image.height, bytes: stored.bytes || image.bytes, mimeType: stored.mimeType || image.mimeType };
+                } catch {
+                    return image;
+                }
+            }),
+        );
+        return { ...log, images: persistedImages };
+    };
+
     const saveLog = async (log: GenerationLog) => {
+        const persistedLog = token ? log : await persistLoggedOutLogImages(log);
         const prevChain = saveLogChainRef.current;
         const nextChain = (async () => {
             try {
@@ -738,10 +766,10 @@ export default function ImagePage() {
             const storedLogs = await readStoredLogs();
             const keys = new Set(imageLogIdentityKeys(log));
             const duplicateLogs = storedLogs.filter((item) => item.id !== log.id && imageLogIdentityKeys(item).some((key) => keys.has(key)));
-            const nextLogs = dedupeGenerationLogs([log, ...storedLogs.filter((item) => item.id !== log.id)]);
+            const nextLogs = dedupeGenerationLogs([persistedLog, ...storedLogs.filter((item) => item.id !== log.id)]);
             setLogs(nextLogs);
             await Promise.all(duplicateLogs.map((item) => logStore.removeItem(item.id)));
-            await logStore.setItem(log.id, serializeLog(log));
+            await logStore.setItem(log.id, serializeLog(persistedLog));
             await persistImageHistory(nextLogs, categories);
         })();
         saveLogChainRef.current = nextChain;
@@ -816,6 +844,13 @@ export default function ImagePage() {
                         setResults((value) => updateResultByLogId(value, log.id, { status: "failed", error: nextLog.errors[0], errorDetail: nextLog.errorDetails?.[0], durationMs: nextLog.durationMs, lastPolledAt: nextLog.lastPolledAt }));
                         return;
                     }
+                    if ((task.image_urls?.length || 0) > 1) {
+                        const nextLogs = imageLogsFromTask(log, task);
+                        await Promise.all(nextLogs.map(saveLog));
+                        setResults((value) => value.filter((item) => !imageResultMatchesLog(item, nextLogs[0])));
+                        return;
+                    }
+
                     const nextLog = imageLogFromTask(log, task);
                     await saveLog(nextLog);
                     if (nextLog.status === "生成中") {
@@ -1243,19 +1278,6 @@ export default function ImagePage() {
     );
 }
 
-const quickSizeOptions = [
-    { value: "auto", label: "auto" },
-    { value: "1:1", label: "1:1" },
-    { value: "3:2", label: "3:2" },
-    { value: "2:3", label: "2:3" },
-    { value: "4:3", label: "4:3" },
-    { value: "3:4", label: "3:4" },
-    { value: "9:16", label: "9:16" },
-    { value: "2048x2048", label: "1:1 2k" },
-    { value: "2048x1152", label: "16:9 2k" },
-    { value: "1152x2048", label: "9:16 2k" },
-];
-
 const quickQualityOptions = [
     { value: "auto", label: "自动" },
     { value: "high", label: "高" },
@@ -1366,15 +1388,16 @@ function WorkbenchPanel({
                                         size="small"
                                         className="canvas-config-mode !rounded-md !p-0.5 w-full"
                                         value={config.apiMode}
-                                        onChange={(value) => updateConfig("apiMode", value as "images" | "responses")}
+                                        onChange={(value) => updateConfig("apiMode", value as "images" | "responses" | "chat")}
                                         options={[
                                             { value: "images", label: "images" },
                                             { value: "responses", label: "responses" },
+                                            { value: "chat", label: "chat" },
                                         ]}
                                     />
                                 </div>
                             </label>
-                            <QuickSelect label="尺寸" value={config.size || "auto"} options={quickSizeOptions} onChange={(value) => updateConfig("size", value)} />
+                            <QuickSelect label="尺寸" value={config.size || "auto"} options={imageSizeOptions} onChange={(value) => updateConfig("size", value)} />
                             <QuickSelect label="质量" value={config.quality || "auto"} options={quickQualityOptions} onChange={(value) => updateConfig("quality", value)} />
                             <QuickNumber label="数量" value={config.count || "1"} min={1} max={10} onChange={(value) => updateConfig("count", value)} />
                             <ReferenceQuickActions references={references} onUploadReferences={onUploadReferences} />
@@ -1540,7 +1563,7 @@ function settingsSummary(config: AiConfig, model: string) {
         imageSizeLabel(config.size || "auto"),
         imageQualityLabel(config.quality || "auto"),
         `${config.count || "1"} 张`,
-        config.streamImages ? `流式 ${config.streamPartialImages || "1"}` : "非流式",
+        config.apiMode !== "chat" && config.streamImages ? `流式 ${config.streamPartialImages || "1"}` : "非流式",
     ].join(" · ");
 }
 
@@ -1821,10 +1844,11 @@ function GenerationSettings({ config, model, updateConfig, openConfigDialog }: {
                             size="small"
                             className="canvas-config-mode !rounded-md !p-0.5"
                             value={config.apiMode}
-                            onChange={(value) => updateConfig("apiMode", value as "images" | "responses")}
+                            onChange={(value) => updateConfig("apiMode", value as "images" | "responses" | "chat")}
                             options={[
                                 { value: "images", label: "images" },
                                 { value: "responses", label: "responses" },
+                                { value: "chat", label: "chat" },
                             ]}
                         />
                     </div>
@@ -1961,10 +1985,10 @@ function TaskInfo({ result, error, onCopyPrompt }: { result: GenerationResult; e
                 ) : null}
                 <Tag className="m-0">{formatLogTime(result.createdAt)}</Tag>
                 <Tag className="m-0">{result.model}</Tag>
-                <Tag className="m-0">{result.config.apiMode === "responses" ? "Responses" : "Images"}</Tag>
+                <Tag className="m-0">{result.config.apiMode === "chat" ? "Chat" : result.config.apiMode === "responses" ? "Responses" : "Images"}</Tag>
                 <Tag className="m-0">{result.config.size || "auto"}</Tag>
                 <Tag className="m-0">{result.config.quality || "auto"}</Tag>
-                {result.config.streamImages ? <Tag className="m-0">流式 {result.config.streamPartialImages || "1"}</Tag> : null}
+                {result.config.apiMode !== "chat" && result.config.streamImages ? <Tag className="m-0">流式 {result.config.streamPartialImages || "1"}</Tag> : null}
                 {result.durationMs ? <Tag className="m-0">{formatDuration(result.durationMs)}</Tag> : null}
             </div>
             {error ? <div className="rounded-md bg-red-100 px-2 py-1.5 text-red-600 dark:bg-red-950/40 dark:text-red-300">{error}</div> : null}
@@ -2098,10 +2122,10 @@ function HistoryLogCard({
                     ) : null}
                     <Tag className="m-0 text-[10px]">{formatLogTime(log.createdAt)}</Tag>
                     <Tag className="m-0 text-[10px]">{log.model}</Tag>
-                    <Tag className="m-0 text-[10px]">{log.config.apiMode === "responses" ? "Responses" : "Images"}</Tag>
+                    <Tag className="m-0 text-[10px]">{log.config.apiMode === "chat" ? "Chat" : log.config.apiMode === "responses" ? "Responses" : "Images"}</Tag>
                     <Tag className="m-0 text-[10px]">{log.config.size || "auto"}</Tag>
                     <Tag className="m-0 text-[10px]">{log.config.quality || "auto"}</Tag>
-                    {log.config.streamImages ? <Tag className="m-0 text-[10px]">流式 {log.config.streamPartialImages || "1"}</Tag> : null}
+                    {log.config.apiMode !== "chat" && log.config.streamImages ? <Tag className="m-0 text-[10px]">流式 {log.config.streamPartialImages || "1"}</Tag> : null}
                     <Tag className="m-0 text-[10px]">{formatDuration(log.durationMs)}</Tag>
                 </div>
                 {log.errors[0] ? (
@@ -2255,7 +2279,14 @@ function imageTaskIdentityKeys(task?: CanvasImageTask) {
 }
 
 function imageLogIdentityKeys(log: GenerationLog) {
-    return uniqueStrings([log.id, ...imageTaskIdentityKeys(log.task), ...log.images.flatMap((image) => [image.id, image.storageKey])]);
+    const taskKeys = (log.task?.image_urls?.length || 0) > 1
+        ? []
+        : imageTaskIdentityKeys(log.task);
+    return uniqueStrings([
+        log.id,
+        ...taskKeys,
+        ...log.images.flatMap((image) => [image.id, image.storageKey]),
+    ]);
 }
 
 function imageResultIdentityKeys(result: GenerationResult) {
@@ -2421,6 +2452,38 @@ function mergeBackendImageTasks(logs: GenerationLog[], tasks: CanvasImageTask[],
     return dedupeGenerationLogs(nextLogs);
 }
 
+function imageLogsFromTask(log: GenerationLog, task: CanvasImageTask): GenerationLog[] {
+    const urls = uniqueStrings(task.image_urls || []);
+    if (urls.length <= 1) return [imageLogFromTask(log, task)];
+    const parentTaskId = task.parent_task_id || task.id;
+
+    return urls.map((url, index) => {
+        const nextLog = imageLogFromTask(
+            {
+                ...log,
+                id: index === 0 ? log.id : `${log.id}:${index}`,
+            },
+            {
+                ...task,
+                id: index === 0 ? task.id : `${parentTaskId}:${index}`,
+                parent_task_id: parentTaskId,
+                url,
+                image_url: url,
+                storageKey: undefined,
+                bytes: 0,
+            },
+        );
+
+        return {
+            ...nextLog,
+            images: nextLog.images.map((image) => ({
+                ...image,
+                id: index === 0 ? task.id : `${parentTaskId}:${index}`,
+            })),
+        };
+    });
+}
+
 function imageLogFromTask(log: GenerationLog, task: CanvasImageTask): GenerationLog {
     const startedAt = parseImageTaskTime(task.started_at ?? task.startedAt ?? task.created_at ?? task.createdAt) || log.createdAt;
     const durationMs = Date.now() - startedAt;
@@ -2579,6 +2642,22 @@ async function normalizeLog(log: Partial<GenerationLog>): Promise<GenerationLog>
         }),
     );
     const visibleImages = images.filter((image) => Boolean(image.dataUrl));
+    if (!visibleImages.length && log.status === "成功") {
+        const taskImageUrl = log.task?.image_url || log.task?.url || "";
+        const dataUrl = await resolveImageUrl(log.task?.storageKey, taskImageUrl);
+        if (dataUrl) {
+            visibleImages.push({
+                id: log.task?.id || log.id || nanoid(),
+                dataUrl,
+                storageKey: log.task?.storageKey,
+                durationMs: log.durationMs || 0,
+                width: log.task?.width || 0,
+                height: log.task?.height || 0,
+                bytes: log.task?.bytes || 0,
+                mimeType: log.task?.mimeType || "image/png",
+            });
+        }
+    }
     const config = normalizeLogConfig(log);
     return {
         id: log.id || nanoid(),

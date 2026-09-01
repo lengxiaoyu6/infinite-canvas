@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/base64"
@@ -16,6 +17,8 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"net/textproto"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -268,38 +271,25 @@ func runCanvasImageTask(task model.CanvasImageTask, user model.AuthUser, body []
 		saveFailedCanvasImageTask(task, message, string(payload))
 		return
 	}
-	imageURL, mimeType, bytes, err := imageURLFromAIResponse(payload, responseContentType)
+	collectAll := isKIESeedreamLayerDecompositionModel(task.Model)
+	imageURLs, mimeType, bytes, err := imageURLsFromAIResponse(payload, responseContentType, collectAll, task.Endpoint == "/chat/completions")
 	if err != nil {
 		saveFailedCanvasImageTask(task, err.Error(), string(payload))
 		return
-	}
-	storageKey := ""
-	if imageData, detectedMimeType, fetchErr := imageCandidateBytes(imageURL); fetchErr == nil && len(imageData) > 0 {
-		if mimeType == "" {
-			mimeType = detectedMimeType
-		}
-		bytes = int64(len(imageData))
-		task.Width, task.Height = imageSize(imageData)
-		object, uploadErr := service.UploadUserStorageObject(service.WithUser(context.Background(), user), "canvas-image"+extensionForTaskMime(mimeType), mimeType, imageData)
-		if uploadErr != nil {
-			log.Printf("upload canvas image to storage failed: user=%s task=%s err=%v", user.ID, task.ID, uploadErr)
-		} else {
-			imageURL = object.URL
-			storageKey = object.StorageKey
-			mimeType = object.MimeType
-			bytes = object.Bytes
-		}
-	} else if fetchErr != nil {
-		log.Printf("read canvas image for storage failed: user=%s task=%s err=%v", user.ID, task.ID, fetchErr)
 	}
 	task.Status = "completed"
 	task.Progress = 100
 	task.CompletedAt = taskTime()
 	task.ResponseBody = string(payload)
-	task.ImageURL = imageURL
-	task.StorageKey = storageKey
+	task.ImageURL = imageURLs[0]
+	if collectAll {
+		task.ImageURLs = imageURLs
+	}
+	task.StorageKey = ""
 	task.MimeType = mimeType
 	task.Bytes = bytes
+	task.Width = 0
+	task.Height = 0
 	task.Error = ""
 	task.ErrorDetail = ""
 	_, _ = service.SaveCanvasImageTask(task)
@@ -337,19 +327,14 @@ func runCanvasAudioTask(task model.CanvasAudioTask, user model.AuthUser, body []
 	if task.ContentType != "" && strings.HasPrefix(task.ContentType, "audio/") {
 		mimeType = task.ContentType
 	}
-	object, err := service.UploadStorageObject(service.WithUser(context.Background(), user), "canvas-audio"+extensionForTaskMime(mimeType), mimeType, payload)
-	if err != nil {
-		saveFailedCanvasAudioTask(task, err.Error(), err.Error())
-		return
-	}
 	task.Status = "completed"
 	task.Progress = 100
 	task.CompletedAt = taskTime()
 	task.ResponseBody = "[binary audio]"
-	task.AudioURL = object.URL
-	task.StorageKey = object.StorageKey
-	task.MimeType = object.MimeType
-	task.Bytes = object.Bytes
+	task.AudioURL = "data:" + mimeType + ";base64," + base64.StdEncoding.EncodeToString(payload)
+	task.StorageKey = ""
+	task.MimeType = mimeType
+	task.Bytes = int64(len(payload))
 	task.Error = ""
 	task.ErrorDetail = ""
 	_, _ = service.SaveCanvasAudioTask(task)
@@ -397,7 +382,7 @@ func readCanvasTaskAIRequest(r *http.Request, fallbackEndpoint string) ([]byte, 
 		return nil, "", "", "", "", "", "", "", "", err
 	}
 	if strings.HasPrefix(contentType, "multipart/form-data") {
-		body, cleanedContentType, meta, err := stripCanvasTaskMultipartFields(raw, contentType)
+		body, cleanedContentType, meta, err := stripCanvasTaskMultipartFields(raw, contentType, strings.HasPrefix(fallbackEndpoint, "/images/"))
 		if err != nil {
 			return nil, "", "", "", "", "", "", "", "", err
 		}
@@ -430,7 +415,7 @@ func readCanvasTaskAIRequest(r *http.Request, fallbackEndpoint string) ([]byte, 
 	return body, "application/json", endpoint, wrapper.Source, wrapper.NodeID, wrapper.SourceID, firstNonEmpty(wrapper.ClientTaskID, wrapper.TaskID), wrapper.Prompt, wrapper.ChannelID, nil
 }
 
-func stripCanvasTaskMultipartFields(raw []byte, contentType string) ([]byte, string, map[string]string, error) {
+func stripCanvasTaskMultipartFields(raw []byte, contentType string, normalizeImages bool) ([]byte, string, map[string]string, error) {
 	_, params, err := mime.ParseMediaType(contentType)
 	if err != nil {
 		return nil, "", nil, err
@@ -456,22 +441,9 @@ func stripCanvasTaskMultipartFields(raw []byte, contentType string) ([]byte, str
 	}
 	for key, files := range form.File {
 		for _, header := range files {
-			file, err := header.Open()
-			if err != nil {
+			if err := writeCanvasTaskMultipartFile(writer, key, header, normalizeImages); err != nil {
 				_ = writer.Close()
 				return nil, "", nil, err
-			}
-			part, err := writer.CreateFormFile(key, header.Filename)
-			if err != nil {
-				_ = file.Close()
-				_ = writer.Close()
-				return nil, "", nil, err
-			}
-			_, copyErr := io.Copy(part, file)
-			_ = file.Close()
-			if copyErr != nil {
-				_ = writer.Close()
-				return nil, "", nil, copyErr
 			}
 		}
 	}
@@ -479,6 +451,53 @@ func stripCanvasTaskMultipartFields(raw []byte, contentType string) ([]byte, str
 		return nil, "", nil, err
 	}
 	return buffer.Bytes(), writer.FormDataContentType(), meta, nil
+}
+
+func writeCanvasTaskMultipartFile(writer *multipart.Writer, field string, header *multipart.FileHeader, normalizeImage bool) error {
+	file, err := header.Open()
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+	reader := io.Reader(file)
+	mimeType, extension := "", ""
+	if normalizeImage {
+		buffered := bufio.NewReaderSize(file, 512)
+		head, _ := buffered.Peek(512)
+		mimeType, extension = canvasTaskImageType(head)
+		reader = buffered
+	}
+	var part io.Writer
+	if mimeType == "" {
+		part, err = writer.CreateFormFile(field, header.Filename)
+	} else {
+		filename := strings.TrimSuffix(header.Filename, filepath.Ext(header.Filename))
+		if filename == "" {
+			filename = "reference"
+		}
+		partHeader := make(textproto.MIMEHeader)
+		partHeader.Set("Content-Disposition", mime.FormatMediaType("form-data", map[string]string{"name": field, "filename": filename + extension}))
+		partHeader.Set("Content-Type", mimeType)
+		part, err = writer.CreatePart(partHeader)
+	}
+	if err != nil {
+		return err
+	}
+	_, err = io.Copy(part, reader)
+	return err
+}
+
+func canvasTaskImageType(data []byte) (string, string) {
+	switch http.DetectContentType(data) {
+	case "image/jpeg":
+		return "image/jpeg", ".jpg"
+	case "image/png":
+		return "image/png", ".png"
+	case "image/webp":
+		return "image/webp", ".webp"
+	default:
+		return "", ""
+	}
 }
 
 func readAIModelFromBody(body []byte, contentType string) string {
@@ -515,7 +534,7 @@ func readWrappedTaskError(payload []byte) string {
 }
 
 func imageBytesFromAIResponse(payload []byte) ([]byte, string, error) {
-	candidates, err := imageCandidatesFromAIResponse(payload, "")
+	candidates, err := imageCandidatesFromAIResponse(payload, "", false)
 	if err != nil {
 		return nil, "", err
 	}
@@ -528,25 +547,47 @@ func imageBytesFromAIResponse(payload []byte) ([]byte, string, error) {
 	return nil, "", errors.New("图片接口没有返回图片")
 }
 
-func imageURLFromAIResponse(payload []byte, contentType string) (string, string, int64, error) {
-	candidates, err := imageCandidatesFromAIResponse(payload, contentType)
+func imageURLsFromAIResponse(payload []byte, contentType string, collectAll bool, includeChatImages bool) ([]string, string, int64, error) {
+	candidates, err := imageCandidatesFromAIResponse(payload, contentType, includeChatImages)
 	if err != nil {
-		return "", "", 0, err
+		return nil, "", 0, err
 	}
+	urls := make([]string, 0, len(candidates))
+	seen := map[string]bool{}
+	firstMimeType := ""
+	var firstBytes int64
 	for _, candidate := range candidates {
-		if strings.HasPrefix(candidate, "http://") || strings.HasPrefix(candidate, "https://") {
-			return candidate, "", 0, nil
+		url := candidate
+		mimeType := ""
+		var bytes int64
+		if !strings.HasPrefix(candidate, "http://") && !strings.HasPrefix(candidate, "https://") {
+			data, detectedMimeType, err := imageCandidateBytes(candidate)
+			if err != nil || len(data) == 0 {
+				continue
+			}
+			mimeType = detectedMimeType
+			bytes = int64(len(data))
+			if !strings.HasPrefix(candidate, "data:image/") {
+				url = "data:" + mimeType + ";base64," + candidate
+			}
 		}
-		data, mimeType, err := imageCandidateBytes(candidate)
-		if err != nil || len(data) == 0 {
+		if seen[url] {
 			continue
 		}
-		if strings.HasPrefix(candidate, "data:image/") {
-			return candidate, mimeType, int64(len(data)), nil
+		seen[url] = true
+		urls = append(urls, url)
+		if len(urls) == 1 {
+			firstMimeType = mimeType
+			firstBytes = bytes
 		}
-		return "data:" + mimeType + ";base64," + candidate, mimeType, int64(len(data)), nil
+		if !collectAll {
+			return urls, firstMimeType, firstBytes, nil
+		}
 	}
-	return "", "", 0, errors.New("图片接口没有返回图片")
+	if len(urls) == 0 {
+		return nil, "", 0, errors.New("图片接口没有返回图片")
+	}
+	return urls, firstMimeType, firstBytes, nil
 }
 
 type serverSentJSONEvent struct {
@@ -554,13 +595,13 @@ type serverSentJSONEvent struct {
 	data any
 }
 
-func imageCandidatesFromAIResponse(payload []byte, contentType string) ([]string, error) {
+func imageCandidatesFromAIResponse(payload []byte, contentType string, includeChatImages bool) ([]string, error) {
 	if !isServerSentEventResponse(payload, contentType) {
 		var root any
 		if err := json.Unmarshal(payload, &root); err != nil {
 			return nil, err
 		}
-		return collectImageCandidates(root, 0), nil
+		return collectImageCandidates(root, 0, includeChatImages), nil
 	}
 
 	events, err := parseServerSentJSONEvents(payload)
@@ -577,7 +618,7 @@ func imageCandidatesFromAIResponse(payload []byte, contentType string) ([]string
 		if strings.EqualFold(event.name, "error") {
 			return nil, errors.New("图片流式接口返回错误")
 		}
-		candidates = append(candidates, collectImageCandidates(event.data, 0)...)
+		candidates = append(candidates, collectImageCandidates(event.data, 0, includeChatImages)...)
 	}
 	return candidates, nil
 }
@@ -620,7 +661,7 @@ func parseServerSentJSONEvents(payload []byte) ([]serverSentJSONEvent, error) {
 	return events, nil
 }
 
-func collectImageCandidates(value any, depth int) []string {
+func collectImageCandidates(value any, depth int, includeChatImages bool) []string {
 	if depth > 7 || value == nil {
 		return nil
 	}
@@ -633,14 +674,17 @@ func collectImageCandidates(value any, depth int) []string {
 	case []any:
 		var result []string
 		for _, item := range typed {
-			result = append(result, collectImageCandidates(item, depth+1)...)
+			result = append(result, collectImageCandidates(item, depth+1, includeChatImages)...)
 		}
 		return result
 	case map[string]any:
-		keys := []string{"url", "b64_json", "partial_image_b64", "image_url", "image", "image_data", "base64", "result", "response", "data", "output"}
+		keys := []string{"url", "b64_json", "partial_image_b64", "image_url", "image", "image_data", "base64", "inlineData", "parts", "content", "candidates", "result", "response", "data", "output"}
+		if includeChatImages {
+			keys = append(keys, "choices", "message", "images")
+		}
 		var result []string
 		for _, key := range keys {
-			result = append(result, collectImageCandidates(typed[key], depth+1)...)
+			result = append(result, collectImageCandidates(typed[key], depth+1, includeChatImages)...)
 		}
 		return result
 	}
@@ -693,28 +737,6 @@ func imageSize(data []byte) (int, int) {
 		return 0, 0
 	}
 	return config.Width, config.Height
-}
-
-func extensionForTaskMime(mimeType string) string {
-	switch strings.ToLower(strings.Split(mimeType, ";")[0]) {
-	case "image/jpeg":
-		return ".jpg"
-	case "image/png":
-		return ".png"
-	case "image/webp":
-		return ".webp"
-	case "audio/wav", "audio/x-wav":
-		return ".wav"
-	case "audio/ogg":
-		return ".ogg"
-	case "audio/mp4", "audio/aac":
-		return ".m4a"
-	default:
-		if strings.HasPrefix(mimeType, "audio/") {
-			return ".mp3"
-		}
-		return ".bin"
-	}
 }
 
 func taskTime() string {

@@ -113,9 +113,12 @@ func CanvasImageTaskResponse(task model.CanvasImageTask) map[string]any {
 		"createdAt":      task.CreatedAt,
 		"updatedAt":      task.UpdatedAt,
 	}
-	if imageURL != "" {
-		result["url"] = imageURL
-		result["image_url"] = imageURL
+	if task.ImageURL != "" {
+		result["url"] = task.ImageURL
+		result["image_url"] = task.ImageURL
+		if len(task.ImageURLs) > 0 {
+			result["image_urls"] = task.ImageURLs
+		}
 		result["storageKey"] = task.StorageKey
 		result["width"] = task.Width
 		result["height"] = task.Height

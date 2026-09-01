@@ -7,7 +7,7 @@ import { SYSTEM, Viewer } from "@photo-sphere-viewer/core";
 import "@photo-sphere-viewer/core/index.css";
 
 import { canvasThemes } from "@/lib/canvas-theme";
-import { getImageRequestUrls, getProxyUrl } from "@/services/image-storage";
+import { getProxyUrl } from "@/services/image-storage";
 import { useThemeStore } from "@/stores/use-theme-store";
 
 type CanvasPanoramaViewerProps = {
@@ -67,11 +67,7 @@ function releasePanoramaViewer(entry: PanoramaViewerEntry) {
 function PanoramaSurface({ src, alt, proxyGeneratedPanorama, viewerEntry }: PanoramaSurfaceProps) {
     const containerRef = useRef<HTMLDivElement>(null);
     const [status, setStatus] = useState<"loading" | "ready" | "error">("loading");
-    const panoramaUrls = proxyGeneratedPanorama ? [getProxyUrl(src), src] : getImageRequestUrls(src);
-    const [panoramaIndex, setPanoramaIndex] = useState(0);
-    const panoramaSrc = panoramaUrls[panoramaIndex] || src;
-
-    useEffect(() => setPanoramaIndex(0), [proxyGeneratedPanorama, src]);
+    const panoramaSrc = proxyGeneratedPanorama ? getProxyUrl(src) : src;
 
     useEffect(() => {
         const container = containerRef.current;
@@ -86,12 +82,6 @@ function PanoramaSurface({ src, alt, proxyGeneratedPanorama, viewerEntry }: Pano
         }
 
         function handleError() {
-            if (panoramaIndex + 1 < panoramaUrls.length) {
-                destroyViewer();
-                setPanoramaIndex((current) => current + 1);
-                setStatus("loading");
-                return;
-            }
             setStatus("error");
             destroyAndReleaseViewer();
         }
@@ -142,12 +132,12 @@ function PanoramaSurface({ src, alt, proxyGeneratedPanorama, viewerEntry }: Pano
         }
 
         return destroyViewer;
-    }, [panoramaIndex, panoramaSrc, panoramaUrls.length, viewerEntry]);
+    }, [panoramaSrc, viewerEntry]);
 
     return (
         <div className="relative h-full w-full overflow-hidden">
             {status === "error" ? (
-                <img src={getImageRequestUrls(src)[0] || src} alt={alt} draggable={false} className="pointer-events-none absolute inset-0 h-full w-full select-none object-contain" />
+                <img src={src} alt={alt} draggable={false} className="pointer-events-none absolute inset-0 h-full w-full select-none object-contain" />
             ) : null}
             <div ref={containerRef} className="absolute inset-0 transition-opacity duration-200" style={{ opacity: status === "ready" ? 1 : 0 }} />
             {status === "loading" ? <div className="pointer-events-none absolute inset-0 flex items-center justify-center bg-black/20 text-xs text-white/80">正在加载全景图...</div> : null}
@@ -178,9 +168,9 @@ export default function CanvasPanoramaViewer({ src, alt, proxyGeneratedPanorama 
     };
     const surface =
         active === null ? null : active ? (
-            <PanoramaSurface key={`${surfaceKey}:${src}:${proxyGeneratedPanorama ? "p" : "d"}`} src={src} alt={alt} proxyGeneratedPanorama={proxyGeneratedPanorama} viewerEntry={viewerEntryRef.current} />
+            <PanoramaSurface key={surfaceKey} src={src} alt={alt} proxyGeneratedPanorama={proxyGeneratedPanorama} viewerEntry={viewerEntryRef.current} />
         ) : (
-            <img src={getImageRequestUrls(src)[0] || src} alt={alt} draggable={false} className="pointer-events-none h-full w-full select-none object-contain" />
+            <img src={src} alt={alt} draggable={false} className="pointer-events-none h-full w-full select-none object-contain" />
         );
 
     if (immersive)

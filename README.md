@@ -6,16 +6,61 @@
 
 <p align="center">
   <a href="https://github.com/tigerowo/infinite-canvas"><img src="https://img.shields.io/github/stars/tigerowo/infinite-canvas?style=flat-square&logo=github" alt="GitHub stars"></a>
-  <a href="VERSION"><img src="https://img.shields.io/badge/version-v0.3.0-2563eb?style=flat-square" alt="Version"></a>
+  <a href="VERSION"><img src="https://img.shields.io/badge/version-v0.6.0-2563eb?style=flat-square" alt="Version"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-AGPL--3.0-f97316?style=flat-square" alt="License"></a>
   <a href="https://www.docker.com/"><img src="https://img.shields.io/badge/Docker-ready-2496ed?style=flat-square&logo=docker&logoColor=white" alt="Docker ready"></a>
   <a href="https://nextjs.org/"><img src="https://img.shields.io/badge/Next.js-16.2-000000?style=flat-square&logo=nextdotjs" alt="Next.js"></a>
   <a href="https://go.dev/"><img src="https://img.shields.io/badge/Go-1.25-00add8?style=flat-square&logo=go&logoColor=white" alt="Go"></a>
 </p>
 
+<p align="center">
+  <a href="#联系方式"><img src="https://img.shields.io/badge/微信交流群已开放-扫码加入-07C160?style=flat-square&logo=wechat&logoColor=white" alt="微信群"></a>
+</p>
+
+<p align="center">
+  <strong>Windows 本地安装包现已同步更新</strong><br>
+  <sub>无需从源码构建，下载即可本地运行</sub>
+</p>
+
+<p align="center">
+  <a href="https://github.com/tigerowo/infinite-canvas/releases/latest">
+    <img
+      src="https://img.shields.io/github/v/release/tigerowo/infinite-canvas?style=for-the-badge&logo=windows11&logoColor=white&label=Windows%20EXE&color=2563eb"
+      alt="下载 Windows EXE"
+    >
+  </a>
+</p>
+
 无限画布是一款面向图片，视频，音频，全能创作的开源工作台。它把画布编排、AI 图片、视频、音频生成、参考图编辑、对话助手、提示词库和素材沉淀放在同一个界面里，适合用来探索视觉方案并连续迭代图片结果
 
-全量支持 APIMart 所有图片，视频模型，直接添加 APIMart Key 以及 URL 即可直接使用
+## 赞助商
+
+<table>
+  <tr>
+    <td width="190" align="center">
+      <a href="https://metaso.cn/minimax-h3/?s=tt" target="_blank" rel="noopener"><img src="assets/metaso.png" width="163" alt="秘塔科技"></a>
+    </td>
+    <td>
+      <strong>MiniMax H3 视频生成 API｜秘塔科技</strong> 秘塔科技提供高性价比的 MiniMax H3 视频生成服务：<strong>768P 仅 0.09 元/秒，2K 仅 0.15 元/秒</strong>。支持原生 2K、音画同步，API 兼容 <strong>OpenAI 协议</strong>，同时支持 <strong>ComfyUI</strong>，无需自行部署 GPU。 🎁 通过 <a href="https://metaso.cn/minimax-h3/?s=tt" target="_blank" rel="noopener noreferrer">无限画布专属链接注册</a>，即可领取赠送额度及专属优惠。
+    </td>
+  </tr>
+</table>
+
+<p align="center">
+  <a href="https://metaso.cn/minimax-h3/?s=tt" target="_blank" rel="noopener"><img src="https://raw.githubusercontent.com/tigerowo/cdn-tdeh/v0.6/img/infinite-canvas/metaso.webp" alt="3D 导演台时间轴" /></a>
+</p>
+<p align="center">
+  <img src="https://raw.githubusercontent.com/tigerowo/cdn-tdeh/v0.5/img/infinite-canvas/3ddirectortl.webp" alt="3D 导演台时间轴" />
+</p>
+<p align="center">
+  <img src="https://raw.githubusercontent.com/tigerowo/cdn-tdeh/v0.4/img/infinite-canvas/3ddirector.webp" alt="3D 导演台" />
+</p>
+<p align="center">
+  <img src="https://gcore.jsdelivr.net/gh/tigerowo/cdn-tdeh@v0.4/img/infinite-canvas/agent.webp" alt="Agent" />
+</p>
+<p align="center">
+  <img src="https://raw.githubusercontent.com/tigerowo/cdn-tdeh/v0.4/img/infinite-canvas/panorama.webp" alt="全景图生成" />
+</p>
 
 APIMart 点此链接 [https://apimart.ai/register?aff=fWMrEv](https://apimart.ai/register?aff=fWMrEv) 注册后充值有积分奖励（支持主流 LLM，音频模型，视频模型）
 
@@ -128,9 +173,22 @@ docker compose -f docker-compose.local.yml up -d --build
 - [系统配置数据结构](docs/backend/system-settings.md)
 - [接口响应约定](docs/backend/api-response.md)
 
+## 联系方式
+
+项目定制二次开发需求，广告赞助合作其他可联系
+
+邮箱：yhb293933@gmail.com
+
+微信交流测试群：
+<p align="center">
+  <img src="assets/wc.png" alt="微信群二维码" width="180">
+</p>
+
 ## 赞助支持
 
 <div align="center">
+
+本项目长期开放广告赞助合作，欢迎品牌 / 产品投放
 
 如果这个项目对你有帮助，欢迎赞助支持，你的每一份鼓励都是持续更新的动力！
 
@@ -148,8 +206,8 @@ docker compose -f docker-compose.local.yml up -d --build
 
 <a href="https://www.star-history.com/?repos=tigerowo%2Finfinite-canvas&type=date&legend=top-left">
  <picture>
-   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=tigerowo/infinite-canvas&type=date&theme=dark&legend=top-left" />
-   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=tigerowo/infinite-canvas&type=date&legend=top-left" />
-   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=tigerowo/infinite-canvas&type=date&legend=top-left" />
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=tigerowo/infinite-canvas&type=date&theme=dark&legend=top-left&sealed_token=SMYnxdZ99ogoiNPY5Qaeg1X9nB17KGpOCvv0Pzjz5mLCx5o7pNOpQNnYpk2CIUkdJMuAcxve8H_ZAYllKY4b7YTvZh0tiHoC8hGfknKnk2IUMYhQoIxgcQ" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=tigerowo/infinite-canvas&type=date&legend=top-left&sealed_token=SMYnxdZ99ogoiNPY5Qaeg1X9nB17KGpOCvv0Pzjz5mLCx5o7pNOpQNnYpk2CIUkdJMuAcxve8H_ZAYllKY4b7YTvZh0tiHoC8hGfknKnk2IUMYhQoIxgcQ" />
+   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=tigerowo/infinite-canvas&type=date&legend=top-left&sealed_token=SMYnxdZ99ogoiNPY5Qaeg1X9nB17KGpOCvv0Pzjz5mLCx5o7pNOpQNnYpk2CIUkdJMuAcxve8H_ZAYllKY4b7YTvZh0tiHoC8hGfknKnk2IUMYhQoIxgcQ" />
  </picture>
 </a>

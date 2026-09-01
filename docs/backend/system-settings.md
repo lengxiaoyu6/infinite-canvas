@@ -112,10 +112,10 @@ description: settings 表中 public 和 private 配置结构说明
 
 | 字段 | 类型 | 说明 |
 | --- | --- | --- |
-| `protocol` | string | 渠道协议，支持 `openai`、`kie`、`apimart` |
+| `protocol` | string | 协议，支持 OpenAI、Gemini、Grok2API、MiniMax、APIMart、KIE、MiMo |
 | `name` | string | 渠道名称 |
-| `baseUrl` | string | OpenAI 兼容接口地址 |
-| `apiKey` | string | 系统 API Key；云端渠道调用需要填写，个人 API Key 渠道可以留空 |
+| `baseUrl` | string | 渠道接口地址 |
+| `apiKey` | string | 渠道密钥 |
 | `models` | string[] | 该渠道可用模型 |
 | `weight` | number | 渠道权重；同一模型有多个可用渠道时按权重随机 |
 | `enabled` | boolean | 是否启用 |

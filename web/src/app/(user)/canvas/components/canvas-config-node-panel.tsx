@@ -110,7 +110,10 @@ export function CanvasConfigNodePanel({ node, isRunning, inputSummary, videoFram
                 ) : mode === "image" ? (
                     <CanvasImageSettingsPopover config={config} placement="topRight" autoAdjustOverflow={false} buttonClassName="canvas-compact-control !h-10 !w-full !justify-start !rounded-lg !px-2" onConfigChange={(key, value) => onConfigChange(node.id, key === "count" ? { count: Number(value) || 1 } : { [key]: value })} />
                 ) : mode === "audio" ? (
-                    <CanvasAudioSettingsPopover config={config} placement="topRight" buttonClassName="canvas-compact-control !h-10 !w-full !justify-start !rounded-lg !px-2" onConfigChange={(key, value) => onConfigChange(node.id, audioConfigPatch(key, value))} />
+                    <CanvasAudioSettingsPopover config={config} resourceOptions={videoResourceOptions} metadata={node.metadata} onMetadataChange={(patch) => onConfigChange(node.id, patch)} placement="topRight" buttonClassName="canvas-compact-control !h-10 !w-full !justify-start !rounded-lg !px-2" onConfigChange={(key, value) => onConfigChange(node.id, audioConfigPatch(key, value))} />
+                ) : null}
+                {mode === "image" || mode === "video" ? (
+                    <CanvasCameraControl value={node.metadata?.cameraControl} onChange={(cameraControl) => onConfigChange(node.id, { cameraControl })} buttonClassName="canvas-compact-control !h-10 !w-full !justify-start !rounded-lg !px-2" />
                 ) : null}
                 {mode === "image" || mode === "video" ? (
                     <CanvasCameraControl value={node.metadata?.cameraControl} onChange={(cameraControl) => onConfigChange(node.id, { cameraControl })} buttonClassName="canvas-compact-control !h-10 !w-full !justify-start !rounded-lg !px-2" />
@@ -177,6 +180,17 @@ function buildNodeConfig(globalConfig: AiConfig, node: CanvasNodeData, mode: Can
         audioFormat: node.metadata?.audioFormat || globalConfig.audioFormat || defaultConfig.audioFormat,
         audioSpeed: node.metadata?.audioSpeed || globalConfig.audioSpeed || defaultConfig.audioSpeed,
         audioInstructions: node.metadata?.audioInstructions || globalConfig.audioInstructions || defaultConfig.audioInstructions,
+        grokTtsVoice: node.metadata?.grokTtsVoice || globalConfig.grokTtsVoice || defaultConfig.grokTtsVoice,
+        grokTtsLanguage: node.metadata?.grokTtsLanguage || globalConfig.grokTtsLanguage || defaultConfig.grokTtsLanguage,
+        grokTtsFormat: node.metadata?.grokTtsFormat || globalConfig.grokTtsFormat || defaultConfig.grokTtsFormat,
+        grokTtsSpeed: node.metadata?.grokTtsSpeed || globalConfig.grokTtsSpeed || defaultConfig.grokTtsSpeed,
+        glmTtsVoice: node.metadata?.glmTtsVoice || globalConfig.glmTtsVoice || defaultConfig.glmTtsVoice,
+        glmTtsFormat: node.metadata?.glmTtsFormat || globalConfig.glmTtsFormat || defaultConfig.glmTtsFormat,
+        glmTtsSpeed: node.metadata?.glmTtsSpeed || globalConfig.glmTtsSpeed || defaultConfig.glmTtsSpeed,
+        mimoTtsVoice: node.metadata?.mimoTtsVoice || globalConfig.mimoTtsVoice || defaultConfig.mimoTtsVoice,
+        mimoTtsFormat: node.metadata?.mimoTtsFormat || globalConfig.mimoTtsFormat || defaultConfig.mimoTtsFormat,
+        mimoVoiceDesignPrompt: node.metadata?.mimoVoiceDesignPrompt || globalConfig.mimoVoiceDesignPrompt || defaultConfig.mimoVoiceDesignPrompt,
+        geminiTtsVoice: node.metadata?.geminiTtsVoice || globalConfig.geminiTtsVoice || defaultConfig.geminiTtsVoice,
         count: String(node.metadata?.count || (mode === "image" ? globalConfig.canvasImageCount || globalConfig.count : globalConfig.count) || defaultConfig.count),
     };
 }
@@ -207,9 +221,6 @@ function videoConfigPatch(key: keyof AiConfig, value: string) {
     return { [key]: value };
 }
 
-function audioConfigPatch(key: CanvasAudioSettingKey, value: string) {
-    if (key === "audioVoice") return { audioVoice: value };
-    if (key === "audioFormat") return { audioFormat: value };
-    if (key === "audioSpeed") return { audioSpeed: value };
-    return { audioInstructions: value };
+function audioConfigPatch(key: CanvasAudioSettingKey, value: string): Partial<CanvasNodeMetadata> {
+    return { [key]: value } as Partial<CanvasNodeMetadata>;
 }

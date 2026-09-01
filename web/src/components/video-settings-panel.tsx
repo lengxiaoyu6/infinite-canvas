@@ -6,13 +6,17 @@ import { Input, Switch } from "antd";
 import { ImageSettingsTheme } from "@/components/image-settings-panel";
 import { boolConfig, isSeedanceFastOrMiniModel, isSeedanceVideoConfig, normalizeSeedanceDuration, normalizeSeedanceRatio, normalizeSeedanceResolution, seedanceDurationOptions, seedancePixelLabel, seedanceRatioOptions, seedanceResolutionOptions } from "@/lib/seedance-video";
 import { type CanvasTheme } from "@/lib/canvas-theme";
-import { modelKey, supportsVideoAudioGeneration } from "@/lib/video-model-capabilities";
-import { channelIdForActiveModel, type AiConfig } from "@/stores/use-config-store";
+import { COGVIDEOX3_DURATIONS, isCogVideoX3Model, modelKey, normalizeCogVideoX3Duration, supportsVideoAudioGeneration } from "@/lib/video-model-capabilities";
+import { channelProtocolForConfig, type AiConfig } from "@/stores/use-config-store";
 
-const resolutionOptions = [
+export const videoResolutionOptions = [
     { value: "720", label: "720p" },
     { value: "480", label: "480p" },
+    { value: "1080", label: "1080p" },
+    { value: "2k", label: "2K" },
+    { value: "4k", label: "4K" },
 ];
+const resolutionButtonOptions = videoResolutionOptions.slice(0, 2);
 
 const sizeOptions = [
     { value: "1280x720", label: "横屏", width: 1280, height: 720 },
@@ -63,12 +67,18 @@ export function VideoSettingsPanel({ config, modelName, onConfigChange, theme, s
 
     const model = modelName || config.model || config.videoModel;
     const grokMode = config.videoMode === "fun" || config.videoMode === "spicy" ? config.videoMode : "normal";
-    const seconds = config.videoSeconds || "6";
+    const cogVideoX3 = isCogVideoX3Model(model);
+    const seconds = cogVideoX3 ? normalizeCogVideoX3Duration(config.videoSeconds) : config.videoSeconds || "6";
     const size = normalizeVideoSizeValue(config.size);
     const dimensions = readSizeDimensions(size);
     const resolution = normalizeVideoResolutionValue(config.vquality);
     const audioGenerationEnabled = supportsVideoAudioGeneration(model);
     const generateAudio = boolConfig(config.videoGenerateAudio, false);
+    const updateResolution = (value: string) => {
+        const nextResolution = normalizeVideoResolutionValue(value);
+        onConfigChange("vquality", nextResolution);
+        onConfigChange("size", videoSizeForResolution(nextResolution, config.size));
+    };
     const updateDimension = (key: "width" | "height", value: number | null) => {
         const next = Math.max(1, Math.floor(value || dimensions[key] || 720));
         const width = key === "width" ? next : dimensions.width;
@@ -102,12 +112,12 @@ export function VideoSettingsPanel({ config, modelName, onConfigChange, theme, s
                 ) : null}
                 <SettingGroup title="清晰度" color={theme.node.muted}>
                     <div className="grid grid-cols-3 gap-2.5">
-                        {resolutionOptions.map((item) => (
-                            <OptionPill key={item.value} selected={resolution === item.value} theme={theme} onClick={() => onConfigChange("vquality", item.value)}>
+                        {resolutionButtonOptions.map((item) => (
+                            <OptionPill key={item.value} selected={resolution === item.value} theme={theme} onClick={() => updateResolution(item.value)}>
                                 {item.label}
                             </OptionPill>
                         ))}
-                        <ResolutionInput value={resolution} theme={theme} onChange={(value) => onConfigChange("vquality", value)} />
+                        <ResolutionInput value={resolution} theme={theme} onChange={updateResolution} />
                     </div>
                 </SettingGroup>
                 <SettingGroup title="尺寸" color={theme.node.muted}>
@@ -157,12 +167,12 @@ export function VideoSettingsPanel({ config, modelName, onConfigChange, theme, s
                     <>
                         <SettingGroup title="秒数" color={theme.node.muted}>
                             <div className="grid grid-cols-3 gap-2.5">
-                                {secondOptions.map((value) => (
+                                {(cogVideoX3 ? COGVIDEOX3_DURATIONS : secondOptions).map((value) => (
                                     <OptionPill key={value} selected={seconds === String(value)} theme={theme} onClick={() => onConfigChange("videoSeconds", String(value))}>
                                         {value}s
                                     </OptionPill>
                                 ))}
-                                <NumberInput value={seconds} min={1} max={30} theme={theme} onChange={(value) => onConfigChange("videoSeconds", value)} />
+                                {cogVideoX3 ? null : <NumberInput value={seconds} min={1} max={30} theme={theme} onChange={(value) => onConfigChange("videoSeconds", value)} />}
                             </div>
                         </SettingGroup>
                         {audioGenerationEnabled ? <AudioGenerationSetting checked={generateAudio} theme={theme} onChange={(checked) => onConfigChange("videoGenerateAudio", String(checked))} /> : null}
@@ -322,13 +332,18 @@ function SeedanceVideoSettingsPanel({ config, modelName, onConfigChange, theme, 
 }
 
 export function videoResolutionLabel(value: string) {
-    return `${normalizeVideoResolutionValue(value)}p`;
+    const resolution = normalizeVideoResolutionValue(value);
+    return resolution.toLowerCase().endsWith("k") ? resolution : `${resolution}p`;
 }
 
 export function videoSizeLabel(value: string) {
     const ratio = normalizeSeedanceRatio(value);
     if (value === "adaptive" || value === "auto") return "自适应";
     if (ratio === value) return seedanceRatioOptions.find((item) => item.value === ratio)?.label || ratio;
+    const presetRatio = seedanceRatioOptions.find((item) =>
+        item.value !== "adaptive" && videoResolutionOptions.some((resolution) => seedancePixelLabel(resolution.value, item.value) === value),
+    );
+    if (presetRatio) return presetRatio.label;
     const size = normalizeVideoSizeValue(value);
     return sizeOptions.find((item) => item.value === size)?.label || size;
 }
@@ -348,6 +363,22 @@ export function normalizeVideoResolutionValue(value: string) {
     if (value === "480p" || value === "low") return "480";
     if (value === "720p" || value === "auto" || value === "high" || value === "medium") return "720";
     return value.replace(/p$/i, "") || "720";
+}
+
+export function videoSizeForResolution(resolution: string, size: string) {
+    const ratio = normalizeSeedanceRatio(size);
+    if (ratio === "adaptive") return "auto";
+    const normalizedResolution = normalizeVideoResolutionValue(resolution);
+    if (!videoResolutionOptions.some((item) => item.value === normalizedResolution.toLowerCase())) return normalizeVideoSizeValue(size);
+    return seedancePixelLabel(normalizedResolution, ratio);
+}
+
+export function videoSizeOptions(resolution: string) {
+    const normalizedResolution = normalizeVideoResolutionValue(resolution);
+    return seedanceRatioOptions.map((item) => {
+        const value = item.value === "adaptive" ? "auto" : seedancePixelLabel(normalizedResolution, item.value);
+        return { value, label: value };
+    });
 }
 
 function OptionPill({ selected, disabled = false, theme, onClick, children }: { selected: boolean; disabled?: boolean; theme: CanvasTheme; onClick: () => void; children: ReactNode }) {
@@ -452,7 +483,14 @@ export function isAPIMartKlingMotionControlConfig(config: AiConfig, modelName: s
 }
 
 export function isKIEKlingV3Config(config: AiConfig, modelName: string) {
-    return isProviderKlingConfig(config, modelName, "kling-3-0-video", "kie");
+    return isProviderKlingConfig(config, modelName, "kling-3-0-video", "kie") || Boolean(kieKlingOmniVariant(config, modelName));
+}
+
+export function kieKlingOmniVariant(config: AiConfig, modelName: string) {
+    const key = modelKey(modelName || config.model || config.videoModel);
+    const variant = key.startsWith("kling-3-0-omni-") ? key.slice("kling-3-0-omni-".length) : "";
+    if (!["text-to-video", "image-to-video", "reference-to-video", "transformation"].includes(variant)) return "";
+    return isProviderKlingConfig(config, modelName, key, "kie") ? variant : "";
 }
 
 export function isKIEKlingMotionControlConfig(config: AiConfig, modelName: string) {
@@ -504,8 +542,5 @@ const grokVideoModeOptions = [
 export function isKIEGrokVideoModel(config: AiConfig, modelName: string) {
     const model = (modelName || "").toLowerCase().trim();
     if (model !== "grok-imagine/text-to-video" && model !== "grok-imagine/image-to-video") return false;
-    const scopedConfig = { ...config, model, videoModel: model };
-    const channelId = channelIdForActiveModel(scopedConfig);
-    const channel = config.publicChannels.find((item) => item.id === channelId) || config.publicChannels[0];
-    return channel?.protocol === "kie" || channel?.baseUrl.toLowerCase().includes("kie") === true;
+    return channelProtocolForConfig({ ...config, model, videoModel: model }) === "kie";
 }

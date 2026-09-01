@@ -59,6 +59,18 @@ export type CanvasNodeMetadata = {
     audioFormat?: string;
     audioSpeed?: string;
     audioInstructions?: string;
+    grokTtsVoice?: string;
+    grokTtsLanguage?: string;
+    grokTtsFormat?: string;
+    grokTtsSpeed?: string;
+    glmTtsVoice?: string;
+    glmTtsFormat?: string;
+    glmTtsSpeed?: string;
+    mimoTtsVoice?: string;
+    mimoTtsFormat?: string;
+    mimoVoiceDesignPrompt?: string;
+    geminiTtsVoice?: string;
+    mimoVoiceCloneAudioNodeId?: string;
     references?: string[];
     naturalWidth?: number;
     naturalHeight?: number;
@@ -108,6 +120,14 @@ export type CanvasDirectorCapture = {
     fileName: string;
 };
 
+export type CanvasDirectorVideo = {
+    blob: Blob;
+    fileName: string;
+    width: number;
+    height: number;
+    durationSeconds: number;
+};
+
 export type CanvasNodeData = {
     id: string;
     type: CanvasNodeType;
@@ -128,6 +148,7 @@ export type CanvasAssistantReference = {
     id: string;
     type: CanvasNodeType;
     title: string;
+    label?: string;
     dataUrl?: string;
     url?: string;
     storageKey?: string;
@@ -160,6 +181,14 @@ export type CanvasAssistantImage = {
     source?: "asset" | "library";
 };
 
+export type CanvasAgentSkillSelection = {
+    id: string;
+    name: string;
+    source: "system" | "user";
+};
+
+export const MAX_CANVAS_AGENT_SKILLS = 5;
+
 export type CanvasAgentPhase =
     | "intake"
     | "concept"
@@ -173,6 +202,8 @@ export type CanvasAgentPhase =
     | "complete";
 
 export type CanvasAgentConfig = {
+    textApiMode: "chat" | "responses";
+    autoGenerateMedia: boolean;
     imageQuality: string;
     imageSize: string;
     videoQuality: string;
@@ -205,7 +236,7 @@ export type CanvasAgentToolCall = {
 
 export type CanvasAgentProtocolMessage =
     | { role: "user" | "system"; content: CanvasAgentContent }
-    | { role: "assistant"; content?: string; toolCalls?: CanvasAgentToolCall[] }
+    | { role: "assistant"; content?: string; reasoningContent?: string; responseItems?: unknown[]; toolCalls?: CanvasAgentToolCall[] }
     | { role: "tool"; content: string; toolCallId: string; name: string };
 
 export type CanvasAssistantMessageStatus = "thinking" | "running" | "waiting" | "success" | "error";
@@ -218,6 +249,8 @@ export type CanvasAssistantMessage = {
     activity?: string;
     references?: CanvasAssistantReference[];
     images?: CanvasAssistantImage[];
+    skills?: CanvasAgentSkillSelection[];
+    skillsSelected?: boolean;
 };
 
 export type CanvasAssistantSession = {
@@ -226,6 +259,8 @@ export type CanvasAssistantSession = {
     messages: CanvasAssistantMessage[];
     agentState: CanvasAgentState;
     protocolMessages: CanvasAgentProtocolMessage[];
+    activeSkills?: CanvasAgentSkillSelection[];
+    contextCheckpoint?: string;
     createdAt: string;
     updatedAt: string;
 };

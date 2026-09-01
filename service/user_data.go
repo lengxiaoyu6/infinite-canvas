@@ -19,25 +19,18 @@ type UserConfigPayload struct {
 }
 
 type StorageObjectProviderInput struct {
-	Enabled           *bool  `json:"enabled,omitempty"`
-	Name              string `json:"name"`
-	Type              string `json:"type"`
-	Endpoint          string `json:"endpoint"`
-	APIEndpoint       string `json:"apiEndpoint"`
-	APIAccessToken    string `json:"apiAccessToken"`
-	APIRefreshToken   string `json:"apiRefreshToken"`
-	APIEmail          string `json:"apiEmail"`
-	APIPassword       string `json:"apiPassword"`
-	APIAccessExpires  int64  `json:"apiAccessExpires"`
-	APIRefreshExpires int64  `json:"apiRefreshExpires"`
-	Region            string `json:"region"`
-	Bucket            string `json:"bucket"`
-	AccessKeyID       string `json:"accessKeyId"`
-	SecretAccessKey   string `json:"secretAccessKey"`
-	PublicBaseURL     string `json:"publicBaseUrl"`
-	PathPrefix        string `json:"pathPrefix"`
-	Username          string `json:"username"`
-	Password          string `json:"password"`
+	Enabled         *bool  `json:"enabled,omitempty"`
+	Name            string `json:"name"`
+	Type            string `json:"type"`
+	Endpoint        string `json:"endpoint"`
+	Region          string `json:"region"`
+	Bucket          string `json:"bucket"`
+	AccessKeyID     string `json:"accessKeyId"`
+	SecretAccessKey string `json:"secretAccessKey"`
+	PublicBaseURL   string `json:"publicBaseUrl"`
+	PathPrefix      string `json:"pathPrefix"`
+	Username        string `json:"username"`
+	Password        string `json:"password"`
 }
 
 type UserStorageProviders struct {
@@ -60,10 +53,12 @@ type userModelConfigInput struct {
 }
 
 type userLocalModelChannelInput struct {
-	ID              string   `json:"id"`
-	SystemChannelID string   `json:"systemChannelId"`
-	APIKey          string   `json:"apiKey"`
-	Models          []string `json:"models"`
+	ID       string   `json:"id"`
+	Protocol string   `json:"protocol"`
+	Name     string   `json:"name"`
+	BaseURL  string   `json:"baseUrl"`
+	APIKey   string   `json:"apiKey"`
+	Models   []string `json:"models"`
 }
 
 func SelectUserLocalModelChannelForModel(userID string, modelName string, channelID string) (model.ModelChannel, error) {
@@ -130,8 +125,25 @@ func SelectUserLocalModelChannelForModel(userID string, modelName string, channe
 		if apiKey == "" {
 			return model.ModelChannel{}, errors.New("个人密钥渠道未填写 API Key")
 		}
-		systemChannel.APIKey = apiKey
-		return systemChannel, nil
+		models := userLocalChannelModels(channel.Models)
+		if len(models) > 0 && !userLocalChannelHasModel(models, modelName) {
+			return model.ModelChannel{}, errors.New("本地渠道不支持该模型")
+		}
+		protocol := strings.ToLower(strings.TrimSpace(channel.Protocol))
+		if protocol == "" {
+			protocol = "openai"
+		}
+		return model.ModelChannel{
+			ID:       channelID,
+			Protocol: protocol,
+			Name:     firstVideoTaskValue(strings.TrimSpace(channel.Name), "本地直连"),
+			BaseURL:  baseURL,
+			APIKey:   apiKey,
+			Models:   models,
+			Weight:   1,
+			Timeout:  600,
+			Enabled:  true,
+		}, nil
 	}
 	return model.ModelChannel{}, errors.New("个人密钥渠道不存在")
 }
@@ -239,99 +251,6 @@ func SaveCurrentUserModelConfig(ctx context.Context, raw json.RawMessage) (UserC
 		return UserConfigPayload{}, err
 	}
 	return CurrentUserConfig(ctx)
-}
-
-func sanitizeUserModelConfig(raw json.RawMessage) (json.RawMessage, error) {
-	var payload map[string]json.RawMessage
-	if err := json.Unmarshal(raw, &payload); err != nil {
-		return nil, err
-	}
-	var input userModelConfigInput
-	if err := json.Unmarshal(raw, &input); err != nil {
-		return nil, err
-	}
-	settings, err := repository.GetSettings()
-	if err != nil {
-		return nil, err
-	}
-	settings = normalizeSettings(settings)
-	channels := settings.Private.Channels
-	allowPersonalChannel := settings.Public.ModelChannel.AllowCustomChannel != nil && *settings.Public.ModelChannel.AllowCustomChannel
-	availableModels := settings.Public.ModelChannel.AvailableModels
-	if len(availableModels) == 0 {
-		availableModels = enabledChannelModels(channels)
-	}
-	channelByID := make(map[string]model.ModelChannel, len(channels))
-	for _, channel := range channels {
-		if channel.Enabled && strings.TrimSpace(channel.BaseURL) != "" {
-			channel.Models = filterEnabledModels(channel.Models, availableModels)
-			if len(channel.Models) > 0 {
-				channelByID[channel.ID] = channel
-			}
-		}
-	}
-	localChannels := make([]userLocalModelChannelInput, 0, len(input.LocalChannels))
-	seen := map[string]bool{}
-	for _, item := range input.LocalChannels {
-		systemChannelID := strings.TrimSpace(item.SystemChannelID)
-		if systemChannelID == "" {
-			systemChannelID = strings.TrimSpace(item.ID)
-		}
-		channel, ok := channelByID[systemChannelID]
-		if !allowPersonalChannel || !ok || seen[systemChannelID] {
-			continue
-		}
-		localChannels = append(localChannels, userLocalModelChannelInput{
-			ID:              systemChannelID,
-			SystemChannelID: systemChannelID,
-			APIKey:          strings.TrimSpace(item.APIKey),
-			Models:          userLocalChannelModels(channel.Models),
-		})
-		seen[systemChannelID] = true
-	}
-	encodedChannels, err := json.Marshal(localChannels)
-	if err != nil {
-		return nil, err
-	}
-	payload["localChannels"] = encodedChannels
-	sanitizeUserModelSelection(payload, "model", "activeChannelId", input.Model, input.ActiveChannelID, channelByID)
-	sanitizeUserModelSelection(payload, "imageModel", "imageChannelId", input.ImageModel, input.ImageChannelID, channelByID)
-	sanitizeUserModelSelection(payload, "videoModel", "videoChannelId", input.VideoModel, input.VideoChannelID, channelByID)
-	sanitizeUserModelSelection(payload, "textModel", "textChannelId", input.TextModel, input.TextChannelID, channelByID)
-	sanitizeUserModelSelection(payload, "audioModel", "audioChannelId", input.AudioModel, input.AudioChannelID, channelByID)
-	delete(payload, "baseUrl")
-	delete(payload, "apiKey")
-	delete(payload, "publicChannels")
-	delete(payload, "models")
-	delete(payload, "imageModels")
-	delete(payload, "videoModels")
-	delete(payload, "textModels")
-	delete(payload, "audioModels")
-	return json.Marshal(payload)
-}
-
-func sanitizeUserModelSelection(payload map[string]json.RawMessage, modelKey string, channelKey string, modelName string, channelID string, channels map[string]model.ModelChannel) {
-	modelName = strings.TrimSpace(modelName)
-	channelID = strings.TrimSpace(channelID)
-	modelAvailable := false
-	for _, channel := range channels {
-		if modelListHasModel(channel.Models, modelName) {
-			modelAvailable = true
-			break
-		}
-	}
-	if !modelAvailable {
-		delete(payload, modelKey)
-		delete(payload, channelKey)
-		return
-	}
-	payload[modelKey], _ = json.Marshal(modelName)
-	channel, ok := channels[channelID]
-	if !ok || !modelListHasModel(channel.Models, modelName) {
-		delete(payload, channelKey)
-		return
-	}
-	payload[channelKey], _ = json.Marshal(channelID)
 }
 
 func CurrentUserImageHistory(ctx context.Context) (json.RawMessage, error) {

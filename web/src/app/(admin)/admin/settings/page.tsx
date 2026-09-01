@@ -2,12 +2,14 @@
 
 import { CheckCircleOutlined, DeleteOutlined, FormatPainterOutlined, LoadingOutlined, PlusOutlined, ReloadOutlined, SaveOutlined } from "@ant-design/icons";
 import { json } from "@codemirror/lang-json";
-import { App, Button, Card, Checkbox, Col, Drawer, Flex, Form, Input, InputNumber, Modal, Row, Segmented, Select, Space, Switch, Table, Tabs, Tag, Typography } from "antd";
+import { App, Button, Card, Col, Drawer, Flex, Form, Input, InputNumber, Modal, Row, Segmented, Select, Space, Switch, Table, Tabs, Tag, Typography } from "antd";
 import dynamic from "next/dynamic";
 import { useEffect, useMemo, useState } from "react";
 import { EditorView } from "@uiw/react-codemirror";
 
-import { checkAdminSenluopanAuth, fetchAdminSettings, fetchChannelModels, measureAdminStorageProvider, saveAdminSettings, testChannelModel, type AdminModelChannel, type AdminModelCost, type AdminSettings, type AdminStorageProvider } from "@/services/api/admin";
+import { ChannelModelSelectorModal } from "@/components/channel-model-selector-modal";
+import { modelChannelApiKeyUrls, modelChannelDefaultBaseUrls } from "@/lib/model-channel";
+import { fetchAdminSettings, fetchChannelModels, measureAdminStorageProvider, saveAdminSettings, testChannelModel, type AdminModelChannel, type AdminModelCost, type AdminSettings, type AdminStorageProvider } from "@/services/api/admin";
 import { useUserStore } from "@/stores/use-user-store";
 
 const CodeMirror = dynamic(() => import("@uiw/react-codemirror"), { ssr: false });
@@ -42,15 +44,14 @@ const emptySettings: AdminSettings = {
         auth: { allowRegister: true, linuxDo: { enabled: false } },
         storage: { mode: "local_indexeddb", allowUserProvider: false },
     },
-    private: { channels: [], promptSync: { enabled: true, cron: "0 0 * * *" }, aiLog: { cleanup: { enabled: false, retentionDays: 14, cron: "0 3 * * *" } }, auth: { linuxDo: { clientId: "", clientSecret: "" } }, storage: { mode: "local_indexeddb", allowUserProvider: false, allowUserGlobalProvider: true, providers: [], roundRobinCursor: 0, capacityCheck: { enabled: false, cron: "0 */6 * * *" }, capacityLimitBytes: 9 * 1024 * 1024 * 1024 } },
+    private: { channels: [], promptSync: { enabled: true, cron: "0 0 * * *" }, aiLog: { localDirectReportEnabled: false, cleanup: { enabled: false, retentionDays: 14, cron: "0 3 * * *" } }, auth: { linuxDo: { clientId: "", clientSecret: "" } }, storage: { mode: "local_indexeddb", allowUserProvider: false, allowUserGlobalProvider: true, providers: [], roundRobinCursor: 0, capacityCheck: { enabled: false, cron: "0 */6 * * *" }, capacityLimitBytes: 9 * 1024 * 1024 * 1024 } },
 };
-const emptyChannel: AdminModelChannel = { id: "", protocol: "openai", name: "", baseUrl: "", apiKey: "", clearApiKey: false, models: [], weight: 1, timeout: 600, enabled: true, remark: "" };
-const emptyS3StorageProvider: AdminStorageProvider = { id: "", name: "", type: "s3", endpoint: "", apiEndpoint: "", apiAccessToken: "", apiRefreshToken: "", apiEmail: "", apiPassword: "", apiAccessExpires: 0, apiRefreshExpires: 0, region: "auto", bucket: "", accessKeyId: "", secretAccessKey: "", publicBaseUrl: "", pathPrefix: "canvas", username: "", password: "", weight: 1, enabled: true, ownerUserId: "", capacityBytes: 0, capacityCheckedAt: "", capacityExceeded: false };
+const emptyChannel: AdminModelChannel = { id: "", protocol: "openai", name: "", baseUrl: modelChannelDefaultBaseUrls.openai, apiKey: "", models: [], weight: 1, timeout: 600, enabled: true, remark: "" };
+const emptyS3StorageProvider: AdminStorageProvider = { id: "", name: "", type: "s3", endpoint: "", region: "auto", bucket: "", accessKeyId: "", secretAccessKey: "", publicBaseUrl: "", pathPrefix: "canvas", username: "", password: "", weight: 1, enabled: true, ownerUserId: "", capacityBytes: 0, capacityCheckedAt: "", capacityExceeded: false };
 const emptyWebDAVStorageProvider: AdminStorageProvider = { ...emptyS3StorageProvider, name: "", type: "webdav", region: "" };
 
 type SettingsTabKey = "public" | "private";
 type EditorMode = "visual" | "json";
-type ModelSelectTabKey = "new" | "current";
 
 export default function AdminSettingsPage() {
     const token = useUserStore((state) => state.token);
@@ -69,13 +70,6 @@ export default function AdminSettingsPage() {
     const [testingModels, setTestingModels] = useState<string[]>([]);
     const [testResults, setTestResults] = useState<Record<string, { status: "success" | "error"; duration?: string; message: string }>>({});
     const [isModelSelectorOpen, setIsModelSelectorOpen] = useState(false);
-    const [modelSelectSource, setModelSelectSource] = useState<string[]>([]);
-    const [modelSelectExisting, setModelSelectExisting] = useState<string[]>([]);
-    const [modelSelectSelected, setModelSelectSelected] = useState<string[]>([]);
-    const [modelSelectKeyword, setModelSelectKeyword] = useState("");
-    const [modelSelectNewModel, setModelSelectNewModel] = useState("");
-    const [modelSelectTab, setModelSelectTab] = useState<ModelSelectTabKey>("new");
-    const [isFetchingChannelModels, setIsFetchingChannelModels] = useState(false);
     const [isLoading, setIsLoading] = useState(false);
     const [isSaving, setIsSaving] = useState(false);
     const [measuringProviderIndex, setMeasuringProviderIndex] = useState<number | null>(null);
@@ -85,17 +79,13 @@ export default function AdminSettingsPage() {
     const [knownModels, setKnownModels] = useState<string[]>([]);
     const publicModels = Form.useWatch(["public", "modelChannel", "availableModels"], form) || [];
     const storageProviders = Form.useWatch(["private", "storage", "providers"], form) || [];
+    const channelProtocol = Form.useWatch("protocol", channelForm);
+    const channelApiKeyUrl = channelProtocol ? modelChannelApiKeyUrls[channelProtocol] : undefined;
     const channelModels = useMemo(() => collectChannelModels(channels), [channels]);
     const channelTableData = useMemo(() => channels.map((channel, index) => ({ ...channel, _index: index, _rowKey: `${index}-${channel.name}-${channel.baseUrl}` })), [channels]);
     const activeMode = editorMode[activeTab];
     const activeJsonText = jsonText[activeTab];
     const jsonError = activeMode === "json" ? getJsonError(activeJsonText) : "";
-    const modelSelectGroups = useMemo(() => buildModelSelectGroups(modelSelectSource, modelSelectExisting), [modelSelectSource, modelSelectExisting]);
-    const activeModelSelectModels = useMemo(() => {
-        const keyword = modelSelectKeyword.trim().toLowerCase();
-        return modelSelectGroups[modelSelectTab].filter((model) => model.toLowerCase().includes(keyword));
-    }, [modelSelectGroups, modelSelectKeyword, modelSelectTab]);
-    const activeSelectedCount = activeModelSelectModels.filter((model) => modelSelectSelected.includes(model)).length;
 
     const loadSettings = async () => {
         if (!token) return;
@@ -220,75 +210,17 @@ export default function AdminSettingsPage() {
             message.warning("请先填写 API Key");
             return;
         }
-        setIsFetchingChannelModels(true);
-        try {
-            const channelModels = await fetchChannelModels(token, { index: editingChannelIndex ?? undefined, channel: normalizeChannel(channel) });
-            const current = isModelSelectorOpen ? uniqueModels(modelSelectSelected) : uniqueModels(channelForm.getFieldValue("models") || []);
-            rememberModels(channelModels);
-            if (!channelModels.length) {
-                message.warning("上游未返回模型列表，请手动输入模型名称");
-                return;
-            }
-            setModelSelectExisting(current);
-            setModelSelectSource(uniqueModels(channelModels));
-            setModelSelectSelected(uniqueModels([...channelModels, ...current]));
-            setModelSelectKeyword("");
-            setModelSelectNewModel("");
-            setModelSelectTab("new");
-            setIsModelSelectorOpen(true);
-            message.success(`已获取 ${channelModels.length} 个模型，请选择后确认`);
-        } catch (error) {
-            message.error(error instanceof Error ? error.message : "读取模型失败");
-        } finally {
-            setIsFetchingChannelModels(false);
-        }
+        return fetchChannelModels(token, { index: editingChannelIndex ?? undefined, channel: normalizeChannel(channel) });
     };
 
-    const openChannelModelSelector = (sourceModels?: string[]) => {
-        const current = uniqueModels(channelForm.getFieldValue("models") || []);
-        const source = uniqueModels(sourceModels !== undefined ? sourceModels : [...knownModels, ...current]);
-        setModelSelectExisting(current);
-        setModelSelectSource(source);
-        setModelSelectSelected(sourceModels ? uniqueModels([...current, ...source]) : current);
-        setModelSelectKeyword("");
-        setModelSelectNewModel("");
-        setModelSelectTab(sourceModels ? "new" : "current");
-        setIsModelSelectorOpen(true);
-    };
+    const openChannelModelSelector = () => setIsModelSelectorOpen(true);
 
-    const closeChannelModelSelector = () => {
-        setIsModelSelectorOpen(false);
-        setModelSelectKeyword("");
-        setModelSelectNewModel("");
-    };
+    const closeChannelModelSelector = () => setIsModelSelectorOpen(false);
 
-    const confirmChannelModelSelector = () => {
-        const models = uniqueModels(modelSelectSelected);
+    const confirmChannelModelSelector = (models: string[]) => {
         channelForm.setFieldValue("models", models);
         rememberModels(models);
         closeChannelModelSelector();
-    };
-
-    const toggleSelectedModel = (model: string, checked: boolean) => {
-        setModelSelectSelected((current) => (checked ? uniqueModels([...current, model]) : current.filter((item) => item !== model)));
-    };
-
-    const selectActiveModels = () => {
-        setModelSelectSelected((current) => uniqueModels([...current, ...activeModelSelectModels]));
-    };
-
-    const clearActiveModels = () => {
-        const active = new Set(activeModelSelectModels);
-        setModelSelectSelected((current) => current.filter((model) => !active.has(model)));
-    };
-
-    const addModelInSelector = () => {
-        const model = modelSelectNewModel.trim();
-        if (!model) return;
-        setModelSelectExisting((current) => uniqueModels([...current, model]));
-        setModelSelectSelected((current) => uniqueModels([...current, model]));
-        setModelSelectNewModel("");
-        setModelSelectTab("current");
     };
 
     function rememberModels(models: string[]) {
@@ -704,10 +636,8 @@ export default function AdminSettingsPage() {
                                                     新增 WebDAV 配置
                                                 </Button>
                                                 {fields.map((field) => {
-                                                    const provider = normalizeStorageProvider(storageProviders[field.name] || emptyS3StorageProvider);
+                                                    const provider = storageProviders[field.name] || emptyS3StorageProvider;
                                                     const isWebDAV = provider.type === "webdav";
-                                                    const hasSenluopanConfig = isWebDAV && Boolean((provider.apiEndpoint || "").trim());
-                                                    const blockedByOtherType = storageProviders.some((item: AdminStorageProvider, index: number) => index !== field.name && item.enabled && item.type !== provider.type);
                                                     const weightField = (
                                                         <Col xs={24} md={3}>
                                                             <Form.Item name={[field.name, "weight"]} label="权重">
@@ -725,12 +655,7 @@ export default function AdminSettingsPage() {
                                                                     <Button size="small" loading={measuringProviderIndex === field.name} onClick={() => void measureStorageProviderAt(field.name)}>
                                                                         统计容量
                                                                     </Button>
-                                                                    {hasSenluopanConfig ? (
-                                                                        <Button size="small" loading={checkingSenluopanIndex === field.name} onClick={() => void checkSenluopanProviderAt(field.name)}>
-                                                                            检查认证
-                                                                        </Button>
-                                                                    ) : null}
-                                                                    <Button danger size="small" icon={<DeleteOutlined />} onClick={() => { remove(field.name); setSenluopanAuthStatus({}); }} />
+                                                                    <Button danger size="small" icon={<DeleteOutlined />} onClick={() => remove(field.name)} />
                                                                 </Flex>
                                                             }
                                                         >
@@ -764,7 +689,18 @@ export default function AdminSettingsPage() {
                                                                 )}
                                                                 <Col xs={24} md={4}>
                                                                     <Form.Item name={[field.name, "enabled"]} label="启用" valuePropName="checked">
-                                                                        <Switch disabled={blockedByOtherType} />
+                                                                        <Switch
+                                                                            onChange={(checked) => {
+                                                                                if (!checked) return;
+                                                                                const providers = form.getFieldValue(["private", "storage", "providers"]) || [];
+                                                                                const type = form.getFieldValue(["private", "storage", "providers", field.name, "type"]);
+                                                                                providers.forEach((item: AdminStorageProvider, i: number) => {
+                                                                                    if (i !== field.name && item.type !== type) {
+                                                                                        form.setFieldValue(["private", "storage", "providers", i, "enabled"], false);
+                                                                                    }
+                                                                                });
+                                                                            }}
+                                                                        />
                                                                     </Form.Item>
                                                                 </Col>
                                                                 {isWebDAV && weightField}
@@ -785,31 +721,7 @@ export default function AdminSettingsPage() {
                                                                                 <Input.Password placeholder="留空沿用已保存密码" />
                                                                             </Form.Item>
                                                                         </Col>
-                                                                        <Col xs={24} md={12}>
-                                                                            <Form.Item name={[field.name, "apiEndpoint"]} label="森络盘 API 地址">
-                                                                                <Input placeholder="https://www.senluopan.com/api/v4" onChange={() => clearSenluopanAuthStatus(field.name)} />
-                                                                            </Form.Item>
-                                                                        </Col>
-                                                                        <Col xs={24} md={6}>
-                                                                            <Form.Item name={[field.name, "apiEmail"]} label="森络盘账号邮箱">
-                                                                                <Input onChange={() => clearSenluopanAuthStatus(field.name)} />
-                                                                            </Form.Item>
-                                                                        </Col>
-                                                                        <Col xs={24} md={6}>
-                                                                            <Form.Item name={[field.name, "apiPassword"]} label="森络盘账号密码">
-                                                                                <Input.Password placeholder="留空沿用已保存密码" onChange={() => clearSenluopanAuthStatus(field.name)} />
-                                                                            </Form.Item>
-                                                                        </Col>
-                                                                        <Col xs={24} md={12}>
-                                                                            <Form.Item name={[field.name, "apiAccessToken"]} label="森络盘 Access Token">
-                                                                                <Input.Password placeholder="留空沿用已保存令牌" onChange={() => clearSenluopanAuthStatus(field.name)} />
-                                                                            </Form.Item>
-                                                                        </Col>
-                                                                        {hasSenluopanConfig && senluopanAuthStatus[field.name] ? (
-                                                                            <Col xs={24}>
-                                                                                <Typography.Text type="secondary">{senluopanAuthStatus[field.name]}</Typography.Text>
-                                                                            </Col>
-                                                                        ) : null}
+                                                                        <Col xs={0} md={6} />
                                                                     </>
                                                                 ) : (
                                                                     <>
@@ -885,7 +797,6 @@ export default function AdminSettingsPage() {
                                             title: "操作",
                                             key: "actions",
                                             width: 220,
-                                            align: "right",
                                             render: (_, item) => (
                                                 <Space size={4}>
                                                     <Button size="small" onClick={() => openTestDialog(item._index)}>
@@ -952,9 +863,16 @@ export default function AdminSettingsPage() {
                                     <Select
                                         options={[
                                             { label: "OpenAI", value: "openai" },
-                                            { label: "KIE", value: "kie" },
+                                            { label: "Gemini", value: "gemini" },
+                                            { label: "Grok2API", value: "grok2api" },
+                                            { label: "MiniMax & METASO", value: "metaso" },
                                             { label: "APIMart", value: "apimart" },
+                                            { label: "KIE", value: "kie" },
+                                            { label: "MiMo", value: "mimo" },
                                         ]}
+                                        onChange={(protocol: AdminModelChannel["protocol"]) => {
+                                            channelForm.setFieldValue("baseUrl", modelChannelDefaultBaseUrls[protocol]);
+                                        }}
                                     />
                                 </Form.Item>
                             </Col>
@@ -974,7 +892,22 @@ export default function AdminSettingsPage() {
                                 </Form.Item>
                             </Col>
                             <Col span={24}>
-                                <Form.Item name="baseUrl" label="接口地址" rules={[{ required: true, message: "请输入接口地址" }]}>
+                                <Form.Item
+                                    name="baseUrl"
+                                    label={
+                                        <span className="relative inline-flex items-center">
+                                            接口地址
+                                            {channelApiKeyUrl ? (
+                                                <span className="absolute left-full top-1/2 ml-2 -translate-y-1/2 whitespace-nowrap">
+                                                    <Button type="primary" size="small" href={channelApiKeyUrl} target="_blank">
+                                                        获取 API Key
+                                                    </Button>
+                                                </span>
+                                            ) : null}
+                                        </span>
+                                    }
+                                    rules={[{ required: true, message: "请输入接口地址" }]}
+                                >
                                     <Input />
                                 </Form.Item>
                             </Col>
@@ -1019,77 +952,16 @@ export default function AdminSettingsPage() {
                         </Row>
                     </Form>
                 </Drawer>
-                <Modal
-                    title={
-                        <Space size={12}>
-                            选择渠道模型
-                            <Typography.Text type="secondary">
-                                已选择 {modelSelectSelected.length} / {uniqueModels([...modelSelectSource, ...modelSelectExisting]).length}
-                            </Typography.Text>
-                        </Space>
-                    }
-                    open={isModelSelectorOpen}
-                    width={960}
-                    onCancel={closeChannelModelSelector}
-                    footer={
-                        <Space>
-                            <Button onClick={closeChannelModelSelector}>取消</Button>
-                            <Button type="primary" onClick={confirmChannelModelSelector}>
-                                确定
-                            </Button>
-                        </Space>
-                    }
-                    destroyOnHidden
-                >
-                    <Flex vertical gap={14}>
-                        <Flex gap={12} wrap>
-                            <Input.Search placeholder="搜索模型" allowClear value={modelSelectKeyword} onChange={(event) => setModelSelectKeyword(event.target.value)} style={{ flex: "1 1 260px" }} />
-                            <Space.Compact style={{ flex: "1 1 320px" }}>
-                                <Input value={modelSelectNewModel} placeholder="输入模型名称" onChange={(event) => setModelSelectNewModel(event.target.value)} onPressEnter={addModelInSelector} />
-                                <Button onClick={addModelInSelector}>增加模型</Button>
-                                <Button icon={<ReloadOutlined />} loading={isFetchingChannelModels} onClick={() => void fetchChannelModelList()}>
-                                    拉取模型列表
-                                </Button>
-                            </Space.Compact>
-                        </Flex>
-                        <Tabs
-                            activeKey={modelSelectTab}
-                            onChange={(key) => setModelSelectTab(key as ModelSelectTabKey)}
-                            items={[
-                                { key: "new", label: `新获取的模型 (${modelSelectGroups.new.length})` },
-                                { key: "current", label: `已有的模型 (${modelSelectGroups.current.length})` },
-                            ]}
-                        />
-                        <Flex justify="space-between" align="center" gap={12} wrap>
-                            <Typography.Text type="secondary">
-                                当前列表已选择 {activeSelectedCount} / {activeModelSelectModels.length}
-                            </Typography.Text>
-                            <Space size={8}>
-                                <Button size="small" disabled={!activeModelSelectModels.length || activeSelectedCount === activeModelSelectModels.length} onClick={selectActiveModels}>
-                                    全选当前列表
-                                </Button>
-                                <Button size="small" disabled={!activeSelectedCount} onClick={clearActiveModels}>
-                                    取消当前列表
-                                </Button>
-                            </Space>
-                        </Flex>
-                        <div style={{ maxHeight: 420, overflowY: "auto", borderTop: "1px solid var(--ant-color-border-secondary)", paddingTop: 12 }}>
-                            {activeModelSelectModels.length ? (
-                                <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", columnGap: 24, rowGap: 12 }}>
-                                    {activeModelSelectModels.map((model) => (
-                                        <Checkbox key={model} checked={modelSelectSelected.includes(model)} onChange={(event) => toggleSelectedModel(model, event.target.checked)}>
-                                            <Typography.Text style={{ wordBreak: "break-all" }}>{model}</Typography.Text>
-                                        </Checkbox>
-                                    ))}
-                                </div>
-                            ) : (
-                                <div style={{ padding: "48px 0", textAlign: "center" }}>
-                                    <Typography.Text type="secondary">没有匹配的模型</Typography.Text>
-                                </div>
-                            )}
-                        </div>
-                    </Flex>
-                </Modal>
+                {isModelSelectorOpen ? (
+                    <ChannelModelSelectorModal
+                        models={channelForm.getFieldValue("models") || []}
+                        sourceModels={knownModels}
+                        onCancel={closeChannelModelSelector}
+                        onConfirm={confirmChannelModelSelector}
+                        onFetchModels={fetchChannelModelList}
+                        onModelsFetched={rememberModels}
+                    />
+                ) : null}
                 <Modal
                     title={
                         <Space>
@@ -1110,7 +982,7 @@ export default function AdminSettingsPage() {
                     destroyOnHidden
                 >
                     <Flex vertical gap={12}>
-                        <Typography.Text type="secondary">测试会向选中模型发送一条 hi，用于确认渠道是否有响应。</Typography.Text>
+                        <Typography.Text type="secondary">测试会向选中模型发送最小测试请求，用于确认渠道是否有响应。</Typography.Text>
                         <Input.Search placeholder="搜索模型..." allowClear value={testKeyword} onChange={(event) => setTestKeyword(event.target.value)} />
                         <Table
                             rowKey="model"
@@ -1135,6 +1007,7 @@ export default function AdminSettingsPage() {
                                             <Space size={6} wrap>
                                                 <Tag color="success">成功</Tag>
                                                 <Typography.Text type="secondary">请求时长: {result.duration}</Typography.Text>
+                                                {result.message && result.message !== "ok" ? <Typography.Text type="secondary">{result.message}</Typography.Text> : null}
                                             </Space>
                                         ) : (
                                             <Typography.Text type="danger">{result.message}</Typography.Text>
@@ -1145,7 +1018,6 @@ export default function AdminSettingsPage() {
                                     title: "操作",
                                     key: "actions",
                                     width: 120,
-                                    align: "right",
                                     render: (_, item) => (
                                         <Button size="small" loading={testingModels.includes(item.model)} onClick={() => void testModelOnline(item.model)}>
                                             测试
@@ -1247,23 +1119,8 @@ function normalizeStorageProvider(item: Partial<AdminStorageProvider> = {}): Adm
         ...(type === "webdav" ? emptyWebDAVStorageProvider : emptyS3StorageProvider),
         ...item,
         id: item.id || "",
-        name: item.name || "",
         type,
-        endpoint: item.endpoint || "",
-        apiEndpoint: item.apiEndpoint || "",
-        apiAccessToken: item.apiAccessToken || "",
-        apiRefreshToken: item.apiRefreshToken || "",
-        apiEmail: item.apiEmail || "",
-        apiPassword: item.apiPassword || "",
         region: type === "s3" ? item.region || "auto" : "",
-        bucket: item.bucket || "",
-        accessKeyId: item.accessKeyId || "",
-        secretAccessKey: item.secretAccessKey || "",
-        publicBaseUrl: item.publicBaseUrl || "",
-        pathPrefix: item.pathPrefix ?? "canvas",
-        username: item.username || "",
-        password: item.password || "",
-        ownerUserId: item.ownerUserId || "",
         weight: Math.max(1, Number(item.weight) || 1),
         enabled: item.enabled !== false,
         capacityBytes: Number(item.capacityBytes) || 0,
@@ -1271,6 +1128,14 @@ function normalizeStorageProvider(item: Partial<AdminStorageProvider> = {}): Adm
         capacityExceeded: item.capacityExceeded === true,
         apiAccessExpires: Number(item.apiAccessExpires) || 0,
         apiRefreshExpires: Number(item.apiRefreshExpires) || 0,
+    };
+}
+
+function newAdminStorageProvider(type: AdminStorageProvider["type"], providers: AdminStorageProvider[]) {
+    const template = type === "webdav" ? emptyWebDAVStorageProvider : emptyS3StorageProvider;
+    return {
+        ...template,
+        enabled: !providers.some((provider) => provider.enabled && provider.type !== type),
     };
 }
 
@@ -1327,16 +1192,6 @@ function collectChannelModels(channels: AdminModelChannel[]) {
 
 function collectKnownModels(settings: AdminSettings) {
     return uniqueModels([...(settings.public.modelChannel.availableModels || []), ...(settings.public.modelChannel.modelCosts || []).map((item) => item.model), ...settings.private.channels.flatMap((channel) => channel.models || [])]);
-}
-
-function buildModelSelectGroups(sourceModels: string[], existingModels: string[]): Record<ModelSelectTabKey, string[]> {
-    const source = uniqueModels(sourceModels);
-    const existing = uniqueModels(existingModels);
-    const existingSet = new Set(existing);
-    return {
-        new: source.filter((model) => !existingSet.has(model)),
-        current: existing,
-    };
 }
 
 function uniqueModels(models: string[]) {
