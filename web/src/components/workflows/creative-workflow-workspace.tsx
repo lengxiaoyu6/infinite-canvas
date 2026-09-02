@@ -547,6 +547,7 @@ export function CreativeWorkflowWorkspace({
                 openConfigDialog(true);
                 return;
             }
+            const localChannel = effectiveConfig.channelMode === "local" ? localChannelForActiveModel(textConfig) : null;
             const referenceDataUrls = await Promise.all(agentReferences.map((image) => imageToDataUrl(image)));
             const result = await draftUserWorkflow<Partial<CreativeWorkflow>>(token, {
                 prompt: text,
@@ -2007,7 +2008,9 @@ function resolveWorkflowRuntime(workflow: CreativeWorkflow, baseConfig: AiConfig
 }
 
 function resolveWorkflowImageChannelId(config: AiConfig, model: string, ...preferredIds: Array<string | undefined>) {
-    const channels = config.publicChannels.map((channel) => ({ id: channel.id, models: channel.models }));
+    const channels = config.channelMode === "remote"
+        ? config.publicChannels.map((channel) => ({ id: channel.id || "", models: channel.models || [] }))
+        : normalizeLocalChannels(config).map((channel) => ({ id: channel.id, models: channel.models }));
     for (const id of preferredIds) {
         const channelId = (id || "").trim();
         if (channelId && channels.some((channel) => channel.id === channelId && channel.models.includes(model))) return channelId;

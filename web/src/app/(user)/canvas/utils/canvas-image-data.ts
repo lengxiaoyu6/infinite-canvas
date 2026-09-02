@@ -1,6 +1,6 @@
 "use client";
 
-import { getProxyUrl } from "@/services/image-storage";
+import { getImageRequestUrls, getProxyUrl } from "@/services/image-storage";
 
 export type ImageCropRect = {
     x: number;
@@ -49,7 +49,7 @@ export async function cropDataUrl(dataUrl: string, crop?: ImageCropRect) {
 }
 
 export async function splitDataUrl(dataUrl: string, params: ImageSplitParams): Promise<ImageSplitPiece[]> {
-    const image = await loadImage(dataUrl);
+    const image = await withLoadedImage(dataUrl, (loadedImage) => loadedImage);
     const xCuts = buildSplitCuts(params.verticalLines, image.width);
     const yCuts = buildSplitCuts(params.horizontalLines, image.height);
     const pieces: ImageSplitPiece[] = [];

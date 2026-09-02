@@ -197,7 +197,7 @@ function resolveEffectiveConfig(config: AiConfig, modelChannel: AdminPublicSetti
         .filter((channel) => channelMode === "local" || channel.hasSystemApiKey)
         .map((channel) => ({
             ...channel,
-            models: normalizeModelList(channel.models).filter((model) => !availableModelSet.size || availableModelSet.has(model)),
+            models: normalizeModelList(channel.models || []).filter((model) => !availableModelSet.size || availableModelSet.has(model)),
         }))
         .filter((channel) => channel.models.length > 0);
     if (channelMode === "local" || !modelChannel) {
@@ -241,11 +241,6 @@ function resolveEffectiveConfig(config: AiConfig, modelChannel: AdminPublicSetti
     resolved.videoChannelId = channelIdForModel(resolved, resolved.videoModel, config.videoChannelId);
     resolved.textChannelId = channelIdForModel(resolved, resolved.textModel, config.textChannelId);
     resolved.audioChannelId = channelIdForModel(resolved, resolved.audioModel, config.audioChannelId);
-    if (channelMode === "local") {
-        const channel = localChannelForActiveModel(resolved);
-        resolved.baseUrl = channel?.baseUrl || "";
-        resolved.apiKey = channel?.apiKey || "";
-    }
     return resolved;
 }
 
@@ -390,7 +385,7 @@ export function resolveModelForCapability(config: AiConfig, currentModel: string
 
 function hasCompleteAiConfig(config: AiConfig, model: string) {
     const channel = localChannelForActiveModel({ ...config, model });
-    return Boolean(model.trim()) && (config.channelMode === "remote" || Boolean(channel?.baseUrl.trim() && channel?.apiKey.trim()));
+    return Boolean(model.trim()) && (config.channelMode === "remote" || Boolean(channel?.baseUrl?.trim() && channel?.apiKey?.trim()));
 }
 
 function isModelConfigReadyForSession(modelConfigOwnerId: string, isModelConfigReady: boolean, token: string, userId: string | undefined, isUserReady: boolean) {
@@ -657,7 +652,7 @@ export function localChannelForActiveModel(config: AiConfig) {
     const localChannels = normalizeLocalChannels(config);
     const localChannel = localChannels.find((channel) => !channel.systemChannelId && channel.id === channelId && (!channel.models.length || channel.models.includes(config.model)));
     if (localChannel) return localChannel;
-    const systemChannel = config.publicChannels.find((channel) => channel.id === channelId && channel.models.includes(config.model));
+    const systemChannel = config.publicChannels.find((channel) => channel.id === channelId && (channel.models || []).includes(config.model));
     if (!systemChannel) return undefined;
     const personalChannel = localChannels.find((channel) => channel.systemChannelId === systemChannel.id);
     return {
@@ -668,8 +663,8 @@ export function localChannelForActiveModel(config: AiConfig) {
 
 function channelIdForModel(config: AiConfig, model: string, preferredId: string) {
     if (!model) return "";
-    if (preferredId && config.publicChannels.some((channel) => channel.id === preferredId && channel.models.includes(model))) return preferredId;
-    return config.publicChannels.find((channel) => channel.models.includes(model))?.id || "";
+    if (preferredId && config.publicChannels.some((channel) => channel.id === preferredId && (channel.models || []).includes(model))) return preferredId;
+    return config.publicChannels.find((channel) => (channel.models || []).includes(model))?.id || "";
 }
 
 export function channelProtocolForConfig(config: AiConfig): LocalModelChannel["protocol"] {

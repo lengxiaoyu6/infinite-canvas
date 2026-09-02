@@ -81,7 +81,7 @@ export function AppConfigModal() {
     const geminiTts = isGeminiTtsModel(config.audioModel) && isGeminiConfig({ ...modelConfig, model: config.audioModel, audioModel: config.audioModel }, config.audioModel);
     const modelSelectChannel = normalizeLocalChannels(config).find((channel) => channel.id === modelSelectChannelId);
     const selectedChannelIds = new Set(modelGroups.map((group) => modelConfig[group.channelKey]).filter(Boolean));
-    const selectedPersonalChannels = effectiveMode === "local" ? modelConfig.publicChannels.filter((channel) => selectedChannelIds.has(channel.id)) : [];
+    const selectedPersonalChannels = effectiveMode === "local" ? modelConfig.publicChannels.filter((channel) => Boolean(channel.id) && selectedChannelIds.has(channel.id || "")) : [];
 
     useEffect(() => {
         setUserStorage(loadUserS3StorageProvider() || defaultUserStorageProvider());
@@ -141,7 +141,7 @@ export function AppConfigModal() {
             return;
         }
         const personalChannels = normalizeLocalChannels(config);
-        const localIncomplete = effectiveMode === "local" && personalChannels.some((channel) => channel.systemChannelId ? !channel.apiKey.trim() : !channel.baseUrl.trim() || !channel.apiKey.trim());
+        const localIncomplete = effectiveMode === "local" && personalChannels.some((channel) => channel.systemChannelId ? !(channel.apiKey || "").trim() : !channel.baseUrl.trim() || !(channel.apiKey || "").trim());
         const modelIncomplete = !modelConfig.imageModel.trim() || !modelConfig.videoModel.trim() || !modelConfig.textModel.trim();
         if (userStorage.enabled && userWebDAVStorage.enabled) {
             message.error("S3/R2 与 WebDAV 不能同时启用");
@@ -466,7 +466,7 @@ export function AppConfigModal() {
                                         <Input.Password
                                             value={normalizeLocalChannels(config).find((item) => item.systemChannelId === channel.id)?.apiKey || ""}
                                             placeholder="API Key"
-                                            onChange={(event) => updatePersonalAPIKey(channel.id, event.target.value, channel.models)}
+                                            onChange={(event) => updatePersonalAPIKey(channel.id!, event.target.value, channel.models || [])}
                                         />
                                     </Form.Item>
                                 ))}

@@ -6,7 +6,7 @@ import { usePathname } from "next/navigation";
 
 import { fetchUserConfig } from "@/services/api/user-config";
 import { defaultUserStorageProvider, defaultUserWebDAVStorageProvider, saveUserStorageProvider, saveUserWebDAVStorageProvider } from "@/services/image-storage";
-import { useConfigStore, type AiConfig } from "@/stores/use-config-store";
+import { useConfigStore, useIsModelConfigReady, type AiConfig } from "@/stores/use-config-store";
 import { useUserStore } from "@/stores/use-user-store";
 
 export function ClientRootInit({ children }: { children: ReactNode }) {

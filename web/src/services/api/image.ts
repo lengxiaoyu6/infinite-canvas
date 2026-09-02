@@ -70,6 +70,11 @@ export type CanvasImageTask = {
 };
 export type CanvasImageTaskOptions = { nodeId?: string; source?: "canvas" | "image-workbench" | "workflow"; sourceId?: string; clientTaskId?: string };
 
+type ParsedImageResponse = {
+    images: GeneratedImage[];
+    responseBody: string;
+};
+
 export class ImageRequestError extends Error {
     detail?: string;
 
@@ -645,6 +650,10 @@ async function requestImageGenerationSingle(config: AiConfig & { seedIndex?: num
         applyAgnesImageSize(body, config, params);
 
         return requestAndParseImages(
+            config,
+            "/images/generations",
+            body,
+            params.timeoutSeconds,
             () =>
                 requestWithTransientRetry(() =>
                     withTimeout(params.timeoutSeconds, (signal) =>
@@ -658,10 +667,11 @@ async function requestImageGenerationSingle(config: AiConfig & { seedIndex?: num
                 ),
             async (response) => {
                 if (config.streamImages && isEventStreamResponse(response)) {
-                    return parseImagesStreamResponse(response, mime);
+                    const images = await parseImagesStreamResponse(response, mime);
+                    return { images, responseBody: summarizeGeneratedImages(images, "event-stream") };
                 }
                 const payload = (await response.json()) as ImageApiResponse;
-                return parseImagePayload(payload, mime);
+                return { images: parseImagePayload(payload, mime), responseBody: stringifyLogPayload(payload) };
             },
         );
     }
@@ -680,6 +690,10 @@ async function requestImageGenerationSingle(config: AiConfig & { seedIndex?: num
     }
 
     return requestAndParseImages(
+        config,
+        "/images/generations",
+        body,
+        params.timeoutSeconds,
         () =>
             requestWithTransientRetry(() =>
                 withTimeout(params.timeoutSeconds, (signal) =>
@@ -693,10 +707,11 @@ async function requestImageGenerationSingle(config: AiConfig & { seedIndex?: num
             ),
         async (response) => {
             if (config.streamImages && isEventStreamResponse(response)) {
-                return parseImagesStreamResponse(response, mime);
+                const images = await parseImagesStreamResponse(response, mime);
+                return { images, responseBody: summarizeGeneratedImages(images, "event-stream") };
             }
             const payload = (await response.json()) as ImageApiResponse;
-            return parseImagePayload(payload, mime);
+            return { images: parseImagePayload(payload, mime), responseBody: stringifyLogPayload(payload) };
         },
     );
 }
@@ -773,6 +788,10 @@ async function requestImageEditSingle(config: AiConfig, prompt: string, referenc
     }
 
     return requestAndParseImages(
+        config,
+        "/images/edits",
+        summarizeFormData(formData),
+        params.timeoutSeconds,
         () =>
             requestWithTransientRetry(() =>
                 withTimeout(params.timeoutSeconds, (signal) =>
@@ -786,10 +805,11 @@ async function requestImageEditSingle(config: AiConfig, prompt: string, referenc
             ),
         async (response) => {
             if (config.streamImages && isEventStreamResponse(response)) {
-                return parseImagesStreamResponse(response, mime);
+                const images = await parseImagesStreamResponse(response, mime);
+                return { images, responseBody: summarizeGeneratedImages(images, "event-stream") };
             }
             const payload = (await response.json()) as ImageApiResponse;
-            return parseImagePayload(payload, mime);
+            return { images: parseImagePayload(payload, mime), responseBody: stringifyLogPayload(payload) };
         },
     );
 }
@@ -854,6 +874,10 @@ async function requestResponsesSingle(config: AiConfig, prompt: string, inputIma
     if (config.streamImages) body.stream = true;
 
     return requestAndParseImages(
+        config,
+        "/responses",
+        body,
+        params.timeoutSeconds,
         () =>
             requestWithTransientRetry(() =>
                 withTimeout(params.timeoutSeconds, (signal) =>
@@ -867,10 +891,11 @@ async function requestResponsesSingle(config: AiConfig, prompt: string, inputIma
             ),
         async (response) => {
             if (config.streamImages && isEventStreamResponse(response)) {
-                return parseResponsesStreamResponse(response, mime);
+                const images = await parseResponsesStreamResponse(response, mime);
+                return { images, responseBody: summarizeGeneratedImages(images, "event-stream") };
             }
             const payload = (await response.json()) as ResponsesApiResponse;
-            return parseResponsesPayload(payload, mime);
+            return { images: parseResponsesPayload(payload, mime), responseBody: stringifyLogPayload(payload) };
         },
     );
 }
@@ -916,7 +941,6 @@ async function requestAndParseImages(config: AiConfig, endpoint: string, request
         }
         throw error;
     }
-    return parseResponse(response);
 }
 
 async function requestImages(config: AiConfig & { seedIndex?: number; seedCount?: number }, prompt: string, references: ReferenceImage[]): Promise<GeneratedImage[]> {
@@ -1174,13 +1198,15 @@ export async function requestImageQuestion(config: AiConfig, messages: ChatCompl
 export async function fetchImageModels(config: AiConfig) {
     if (config.channelMode === "remote") return config.models;
     const channel = localChannelForActiveModel(config);
-    if (channel?.protocol === "gemini") return fetchGeminiModels(channel.baseUrl, channel.apiKey);
+    const baseUrl = channel?.baseUrl || config.baseUrl;
+    const apiKey = channel?.apiKey || config.apiKey;
+    if (channel?.protocol === "gemini") return fetchGeminiModels(baseUrl, apiKey);
     if (isMiniMaxChannel(channel)) return [...miniMaxModels];
     if (isMimoChannel(channel || { baseUrl: config.baseUrl })) return [...mimoModels];
     try {
-        const response = await axios.get<{ data?: Array<{ id?: string }>; error?: { message?: string } }>(buildApiUrl(config.baseUrl, "/models"), {
+        const response = await axios.get<{ data?: Array<{ id?: string }>; error?: { message?: string } }>(buildApiUrl(baseUrl, "/models"), {
             headers: {
-                Authorization: `Bearer ${config.apiKey}`,
+                Authorization: `Bearer ${apiKey}`,
             },
             timeout: IMAGE_REQUEST_TIMEOUT_SECONDS * 1000,
         });
@@ -1421,6 +1447,10 @@ async function requestAgnesImageEdit(config: AiConfig & { seedIndex?: number; se
     applyAgnesImageSize(body, config, params);
 
     return requestAndParseImages(
+        config,
+        "/images/generations",
+        body,
+        params.timeoutSeconds,
         () =>
             requestWithTransientRetry(() =>
                 withTimeout(params.timeoutSeconds, (signal) =>
@@ -1434,10 +1464,11 @@ async function requestAgnesImageEdit(config: AiConfig & { seedIndex?: number; se
             ),
         async (response) => {
             if (config.streamImages && isEventStreamResponse(response)) {
-                return parseImagesStreamResponse(response, mime);
+                const images = await parseImagesStreamResponse(response, mime);
+                return { images, responseBody: summarizeGeneratedImages(images, "event-stream") };
             }
             const payload = (await response.json()) as ImageApiResponse;
-            return parseImagePayload(payload, mime);
+            return { images: parseImagePayload(payload, mime), responseBody: stringifyLogPayload(payload) };
         },
     );
 }

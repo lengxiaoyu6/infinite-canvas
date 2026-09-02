@@ -95,8 +95,10 @@ async function prepareDirectRequest(config: AiConfig, provider: DirectAIProvider
 
 function requireDirectChannel(config: AiConfig) {
     const channel = localChannelForActiveModel(config);
-    if (!channel?.baseUrl.trim() || !channel.apiKey.trim()) throw new Error("本地渠道地址或 API Key 不能为空");
-    return channel;
+    const baseUrl = channel?.baseUrl?.trim() || "";
+    const apiKey = channel?.apiKey?.trim() || "";
+    if (!channel || !baseUrl || !apiKey) throw new Error("本地渠道地址或 API Key 不能为空");
+    return { ...channel, baseUrl, apiKey };
 }
 
 async function serializeDirectBody(body: DirectRequestBody): Promise<SerializedDirectBody> {
