@@ -63,12 +63,9 @@ export async function splitDataUrl(dataUrl: string, params: ImageSplitParams): P
             pieces.push({ row, column, dataUrl: drawCrop(image, sx, sy, sw, sh) });
         }
 
-        return pieces;
-    });
-}
+    }
 
-function buildSplitCuts(lines: number[], size: number) {
-    return [0, ...lines.map((line) => Math.round(line * size)).filter((line) => line > 0 && line < size).sort((a, b) => a - b), size];
+    return pieces;
 }
 
 function buildSplitCuts(lines: number[], size: number) {
@@ -185,7 +182,7 @@ async function withLoadedImage<T>(dataUrl: string, render: (image: HTMLImageElem
     throw lastError || new Error("图片加载失败");
 }
 
-function loadImageFromSrc(src: string) {
+function loadImageFromSrc(dataUrl: string) {
     return new Promise<HTMLImageElement>((resolve, reject) => {
         const image = new Image();
         let src = dataUrl;

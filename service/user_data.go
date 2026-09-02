@@ -23,6 +23,13 @@ type StorageObjectProviderInput struct {
 	Name            string `json:"name"`
 	Type            string `json:"type"`
 	Endpoint        string `json:"endpoint"`
+	APIEndpoint       string `json:"apiEndpoint"`
+	APIAccessToken    string `json:"apiAccessToken"`
+	APIRefreshToken   string `json:"apiRefreshToken"`
+	APIEmail          string `json:"apiEmail"`
+	APIPassword       string `json:"apiPassword"`
+	APIAccessExpires  int64  `json:"apiAccessExpires"`
+	APIRefreshExpires int64  `json:"apiRefreshExpires"`
 	Region          string `json:"region"`
 	Bucket          string `json:"bucket"`
 	AccessKeyID     string `json:"accessKeyId"`
@@ -53,12 +60,13 @@ type userModelConfigInput struct {
 }
 
 type userLocalModelChannelInput struct {
-	ID       string   `json:"id"`
-	Protocol string   `json:"protocol"`
-	Name     string   `json:"name"`
-	BaseURL  string   `json:"baseUrl"`
-	APIKey   string   `json:"apiKey"`
-	Models   []string `json:"models"`
+	ID              string   `json:"id"`
+	SystemChannelID string   `json:"systemChannelId"`
+	Protocol        string   `json:"protocol"`
+	Name            string   `json:"name"`
+	BaseURL         string   `json:"baseUrl"`
+	APIKey          string   `json:"apiKey"`
+	Models          []string `json:"models"`
 }
 
 func SelectUserLocalModelChannelForModel(userID string, modelName string, channelID string) (model.ModelChannel, error) {
@@ -97,41 +105,53 @@ func SelectUserLocalModelChannelForModel(userID string, modelName string, channe
 	if len(availableModels) == 0 {
 		availableModels = enabledChannelModels(settings.Private.Channels)
 	}
-	if !modelListHasModel(availableModels, modelName) {
+	if len(availableModels) > 0 && !modelListHasModel(availableModels, modelName) {
 		return model.ModelChannel{}, errors.New("个人密钥渠道未开放该模型")
 	}
 	for _, channel := range modelConfig.LocalChannels {
+		localID := strings.TrimSpace(channel.ID)
 		systemChannelID := strings.TrimSpace(channel.SystemChannelID)
-		if systemChannelID == "" {
-			systemChannelID = strings.TrimSpace(channel.ID)
-		}
-		if systemChannelID != channelID {
+		if localID != channelID && systemChannelID != channelID {
 			continue
 		}
-		var systemChannel model.ModelChannel
-		for _, item := range settings.Private.Channels {
-			if strings.TrimSpace(item.ID) == systemChannelID {
-				systemChannel = item
-				break
-			}
-		}
-		if systemChannel.ID == "" || !systemChannel.Enabled || strings.TrimSpace(systemChannel.BaseURL) == "" {
-			return model.ModelChannel{}, errors.New("个人密钥渠道不可用")
-		}
-		if !modelListHasModel(systemChannel.Models, modelName) {
-			return model.ModelChannel{}, errors.New("个人密钥渠道不支持该模型")
-		}
-		apiKey := strings.TrimSpace(channel.APIKey)
-		if apiKey == "" {
-			return model.ModelChannel{}, errors.New("个人密钥渠道未填写 API Key")
-		}
-		models := userLocalChannelModels(channel.Models)
-		if len(models) > 0 && !userLocalChannelHasModel(models, modelName) {
-			return model.ModelChannel{}, errors.New("本地渠道不支持该模型")
-		}
+		baseURL := strings.TrimSpace(channel.BaseURL)
 		protocol := strings.ToLower(strings.TrimSpace(channel.Protocol))
 		if protocol == "" {
 			protocol = "openai"
+		}
+		apiKey := strings.TrimSpace(channel.APIKey)
+		models := userLocalChannelModels(channel.Models)
+
+		// Legacy personal channels are identified by systemChannelId.
+		if systemChannelID != "" {
+			var systemChannel model.ModelChannel
+			for _, item := range settings.Private.Channels {
+				if strings.TrimSpace(item.ID) == systemChannelID {
+					systemChannel = item
+					break
+				}
+			}
+			if systemChannel.ID == "" || !systemChannel.Enabled || strings.TrimSpace(systemChannel.BaseURL) == "" {
+				return model.ModelChannel{}, errors.New("个人密钥渠道不可用")
+			}
+			if !modelListHasModel(systemChannel.Models, modelName) {
+				return model.ModelChannel{}, errors.New("个人密钥渠道不支持该模型")
+			}
+			apiKey = strings.TrimSpace(channel.APIKey)
+			if apiKey == "" {
+				return model.ModelChannel{}, errors.New("个人密钥渠道未填写 API Key")
+			}
+			if len(models) > 0 && !userLocalChannelHasModel(models, modelName) {
+				return model.ModelChannel{}, errors.New("个人密钥渠道不支持该模型")
+			}
+			systemChannel.APIKey = apiKey
+			return systemChannel, nil
+		}
+		if baseURL == "" || apiKey == "" {
+			return model.ModelChannel{}, errors.New("本地渠道配置不完整")
+		}
+		if len(models) > 0 && !userLocalChannelHasModel(models, modelName) {
+			return model.ModelChannel{}, errors.New("本地渠道不支持该模型")
 		}
 		return model.ModelChannel{
 			ID:       channelID,
@@ -251,6 +271,137 @@ func SaveCurrentUserModelConfig(ctx context.Context, raw json.RawMessage) (UserC
 		return UserConfigPayload{}, err
 	}
 	return CurrentUserConfig(ctx)
+}
+
+func sanitizeUserModelConfig(raw json.RawMessage) (json.RawMessage, error) {
+	var payload map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		return nil, err
+	}
+	var input userModelConfigInput
+	if err := json.Unmarshal(raw, &input); err != nil {
+		return nil, err
+	}
+	settings, err := repository.GetSettings()
+	if err != nil {
+		return nil, err
+	}
+	settings = normalizeSettings(settings)
+	allowPersonalChannel := settings.Public.ModelChannel.AllowCustomChannel != nil && *settings.Public.ModelChannel.AllowCustomChannel
+	availableModels := settings.Public.ModelChannel.AvailableModels
+	if len(availableModels) == 0 {
+		availableModels = enabledChannelModels(settings.Private.Channels)
+	}
+	availableModelSet := make(map[string]bool, len(availableModels))
+	for _, name := range availableModels {
+		if name = strings.TrimSpace(name); name != "" {
+			availableModelSet[strings.ToLower(name)] = true
+		}
+	}
+	channelByID := make(map[string]model.ModelChannel, len(settings.Private.Channels))
+	for _, channel := range settings.Private.Channels {
+		if !channel.Enabled || strings.TrimSpace(channel.BaseURL) == "" {
+			continue
+		}
+		channel.Models = filterEnabledModels(channel.Models, availableModels)
+		if len(channel.Models) > 0 {
+			channelByID[strings.TrimSpace(channel.ID)] = channel
+		}
+	}
+
+	localChannels := make([]userLocalModelChannelInput, 0, len(input.LocalChannels))
+	selectableChannels := make(map[string]model.ModelChannel, len(channelByID)+len(input.LocalChannels))
+	for id, channel := range channelByID {
+		selectableChannels[id] = channel
+	}
+	seen := map[string]bool{}
+	for _, item := range input.LocalChannels {
+		id := strings.TrimSpace(item.ID)
+		systemID := strings.TrimSpace(item.SystemChannelID)
+		models := userLocalChannelModels(item.Models)
+		if systemID != "" {
+			channel, ok := channelByID[systemID]
+			if !allowPersonalChannel || !ok || seen[systemID] {
+				continue
+			}
+			localChannels = append(localChannels, userLocalModelChannelInput{
+				ID:              systemID,
+				SystemChannelID: systemID,
+				APIKey:          strings.TrimSpace(item.APIKey),
+				Models:          userLocalChannelModels(channel.Models),
+			})
+			seen[systemID] = true
+			selectableChannels[systemID] = channel
+			continue
+		}
+		if id == "" || !allowPersonalChannel || seen[id] || strings.TrimSpace(item.BaseURL) == "" || strings.TrimSpace(item.APIKey) == "" {
+			continue
+		}
+		hadModels := len(models) > 0
+		if hadModels && len(availableModelSet) > 0 {
+			filtered := make([]string, 0, len(models))
+			for _, name := range models {
+				if availableModelSet[strings.ToLower(name)] {
+					filtered = append(filtered, name)
+				}
+			}
+			models = filtered
+			if len(models) == 0 {
+				continue
+			}
+		}
+		protocol := strings.ToLower(strings.TrimSpace(item.Protocol))
+		if protocol == "" {
+			protocol = "openai"
+		}
+		local := userLocalModelChannelInput{
+			ID:       id,
+			Protocol: protocol,
+			Name:     strings.TrimSpace(item.Name),
+			BaseURL:  strings.TrimSpace(item.BaseURL),
+			APIKey:   strings.TrimSpace(item.APIKey),
+			Models:   models,
+		}
+		localChannels = append(localChannels, local)
+		seen[id] = true
+		selectableChannels[id] = model.ModelChannel{ID: id, Protocol: protocol, Name: local.Name, BaseURL: local.BaseURL, APIKey: local.APIKey, Models: models, Enabled: true}
+	}
+	encodedChannels, err := json.Marshal(localChannels)
+	if err != nil {
+		return nil, err
+	}
+	payload["localChannels"] = encodedChannels
+	sanitizeUserModelSelection(payload, "model", "activeChannelId", input.Model, input.ActiveChannelID, selectableChannels, availableModelSet)
+	sanitizeUserModelSelection(payload, "imageModel", "imageChannelId", input.ImageModel, input.ImageChannelID, selectableChannels, availableModelSet)
+	sanitizeUserModelSelection(payload, "videoModel", "videoChannelId", input.VideoModel, input.VideoChannelID, selectableChannels, availableModelSet)
+	sanitizeUserModelSelection(payload, "textModel", "textChannelId", input.TextModel, input.TextChannelID, selectableChannels, availableModelSet)
+	sanitizeUserModelSelection(payload, "audioModel", "audioChannelId", input.AudioModel, input.AudioChannelID, selectableChannels, availableModelSet)
+	delete(payload, "baseUrl")
+	delete(payload, "apiKey")
+	delete(payload, "publicChannels")
+	delete(payload, "models")
+	delete(payload, "imageModels")
+	delete(payload, "videoModels")
+	delete(payload, "textModels")
+	delete(payload, "audioModels")
+	return json.Marshal(payload)
+}
+
+func sanitizeUserModelSelection(payload map[string]json.RawMessage, modelKey string, channelKey string, modelName string, channelID string, channels map[string]model.ModelChannel, availableModels map[string]bool) {
+	modelName = strings.TrimSpace(modelName)
+	channelID = strings.TrimSpace(channelID)
+	if modelName == "" || (len(availableModels) > 0 && !availableModels[strings.ToLower(modelName)]) {
+		delete(payload, modelKey)
+		delete(payload, channelKey)
+		return
+	}
+	payload[modelKey], _ = json.Marshal(modelName)
+	channel, ok := channels[channelID]
+	if !ok || (len(channel.Models) > 0 && !modelListHasModel(channel.Models, modelName)) {
+		delete(payload, channelKey)
+		return
+	}
+	payload[channelKey], _ = json.Marshal(channelID)
 }
 
 func CurrentUserImageHistory(ctx context.Context) (json.RawMessage, error) {

@@ -189,7 +189,21 @@ func normalizeAILogCleanupSetting(setting model.AILogCleanupSetting) model.AILog
 
 func normalizeAILogSetting(setting model.AILogSetting) model.AILogSetting {
 	setting.Cleanup = normalizeAILogCleanupSetting(setting.Cleanup)
+	if setting.LocalDirectReportEnabled == nil {
+		enabled := false
+		setting.LocalDirectReportEnabled = &enabled
+	}
 	return setting
+}
+
+func LocalDirectAILogEnabled() bool {
+	settings, err := repository.GetSettings()
+	if err != nil {
+		log.Printf("load local direct ai log setting failed err=%v", err)
+		return false
+	}
+	setting := normalizeAILogSetting(settings.Private.AILog)
+	return setting.LocalDirectReportEnabled != nil && *setting.LocalDirectReportEnabled
 }
 
 func appendAICallLog(item model.AICallLog) error {

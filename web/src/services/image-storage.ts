@@ -35,6 +35,13 @@ export type UserS3StorageProvider = UserStorageProviderBase & {
 
 export type UserWebDAVStorageProvider = UserStorageProviderBase & {
     type: "webdav";
+    apiEndpoint: string;
+    apiAccessToken: string;
+    apiRefreshToken: string;
+    apiEmail: string;
+    apiPassword: string;
+    apiAccessExpires: number;
+    apiRefreshExpires: number;
     pathPrefix: string;
     username: string;
     password: string;
@@ -119,21 +126,6 @@ export function getProxyUrl(url: string): string {
     return `/api/proxy-image?url=${encodeURIComponent(url)}`;
 }
 
-export async function uploadImage(input: string | Blob, options: UploadImageOptions = {}): Promise<UploadedImage> {
-    const url = typeof input === "string" ? getProxyUrl(input) : input;
-    let blob: Blob;
-    if (typeof url === "string") {
-        const response = await fetch(url);
-        if (!response.ok) {
-            const payload = await response.json().catch(() => null) as { msg?: string } | null;
-            throw new Error(payload?.msg || `代理图片拉取失败：${response.status}`);
-        }
-    } catch {
-        return url;
-    }
-    return `/api/proxy-image?url=${encodeURIComponent(url)}`;
-}
-
 function getProxyImageSourceUrl(value: string) {
     try {
         const base = typeof window === "undefined" ? "http://localhost" : window.location.origin;
@@ -210,10 +202,6 @@ export async function uploadImage(input: string | Blob, options: UploadImageOpti
         const serverUpload = await maybeUploadImageToServer(blob);
         if (serverUpload) return serverUpload;
     }
-    if (!options.localOnly) {
-        const serverUpload = await maybeUploadImageToServer(blob);
-        if (serverUpload) return serverUpload;
-    }
     const storageKey = `image:${nanoid()}`;
     await store.setItem(storageKey, blob);
     const urlObj = URL.createObjectURL(blob);
@@ -270,11 +258,15 @@ export async function resolveImageUrl(storageKey?: string, fallback = "") {
     }
     if (storageKey.startsWith("server:")) {
         const id = storageKey.slice("server:".length);
-        if (fallback && !fallback.startsWith("blob:") && !fallback.includes("direct=1")) return fallback;
+        const fallbackUrl = publicImageUrl(fallback);
+        if (fallbackUrl) {
+            serverUrls.set(id, fallbackUrl);
+            return fallbackUrl;
+        }
         const localUrl = await resolveLocalImageUrl(storageKey).catch(() => "");
         if (localUrl) return localUrl;
         const cachedUrl = serverUrls.get(id);
-        if (cachedUrl) return cachedUrl;
+        if (cachedUrl && !isProjectFileContentUrl(cachedUrl)) return cachedUrl;
         const { getStorageObjectInfo } = await import("@/services/api/storage");
         const info = await getStorageObjectInfo(id).catch(() => null);
         if (!info) return fallback;
@@ -474,6 +466,13 @@ export function defaultUserWebDAVStorageProvider(): UserWebDAVStorageProvider {
         name: "我的 WebDAV",
         type: "webdav",
         endpoint: "",
+        apiEndpoint: "",
+        apiAccessToken: "",
+        apiRefreshToken: "",
+        apiEmail: "",
+        apiPassword: "",
+        apiAccessExpires: 0,
+        apiRefreshExpires: 0,
         pathPrefix: "canvas",
         username: "",
         password: "",
@@ -532,6 +531,13 @@ export function toProviderPayload(provider: UserStorageProvider) {
             name: provider.name,
             type: "webdav" as const,
             endpoint: provider.endpoint,
+            apiEndpoint: provider.apiEndpoint,
+            apiAccessToken: provider.apiAccessToken,
+            apiRefreshToken: provider.apiRefreshToken,
+            apiEmail: provider.apiEmail,
+            apiPassword: provider.apiPassword,
+            apiAccessExpires: provider.apiAccessExpires,
+            apiRefreshExpires: provider.apiRefreshExpires,
             pathPrefix: provider.pathPrefix,
             username: provider.username,
             password: provider.password,

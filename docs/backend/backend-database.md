@@ -89,7 +89,8 @@ S3/R2 与 WebDAV 共用的媒体文件索引表，不保存画布、素材列表
 | `provider_id` | string | 创建文件时使用的 S3/R2 或 WebDAV Provider ID |
 | `bucket` | string | S3/R2 Bucket；WebDAV 为空 |
 | `object_key` | string | Provider 内相对对象路径，唯一索引 |
-| `public_url` | string | S3/R2 可选公开地址；WebDAV 为空并通过 `/api/files/:id/content` 读取 |
+| `public_url` | string | S3/R2 的可选公开地址；森络盘 WebDAV 对象优先保存创建的长期直链，直链创建失败时回退到 `/api/files/:id/content` |
+| `direct_link_id` | string | 森络盘长期直链 ID；删除对象时用于删除对应直链，其他存储类型为空 |
 | `mime_type` | string | 媒体 MIME 类型 |
 | `bytes` | number | 文件字节数 |
 | `width` | number | 预留字段，当前上传链路未写入，默认 `0` |

@@ -10,6 +10,7 @@ import { useUserStore } from "@/stores/use-user-store";
 
 export type LocalModelChannel = {
     id: string;
+    systemChannelId?: string;
     protocol: "openai" | "gemini" | "grok2api" | "metaso" | "apimart" | "kie" | "mimo";
     name: string;
     baseUrl: string;
@@ -81,7 +82,7 @@ export type AiConfig = {
         workflowAgent: string;
     };
     localChannels: LocalModelChannel[];
-    publicChannels: Array<{ id?: string; protocol?: LocalModelChannel["protocol"]; name?: string; baseUrl?: string; models?: string[]; weight?: number; timeout?: number; enabled?: boolean; remark?: string }>;
+    publicChannels: Array<{ id?: string; protocol?: LocalModelChannel["protocol"]; name?: string; baseUrl?: string; models?: string[]; weight?: number; timeout?: number; enabled?: boolean; remark?: string; hasSystemApiKey?: boolean }>;
     syncStorageConfig: boolean;
     syncWebDAVStorageConfig: boolean;
     activeChannelId: string;
@@ -187,8 +188,18 @@ type ConfigStore = {
     clearPromptContinue: () => void;
 };
 
-function resolveEffectiveConfig(config: AiConfig, modelChannel: AdminPublicSettings["modelChannel"] | null, canUseRemoteChannel: boolean) {
-    const channelMode = canUseRemoteChannel ? (modelChannel?.allowCustomChannel ? config.channelMode : "remote") : "local";
+function resolveEffectiveConfig(config: AiConfig, modelChannel: AdminPublicSettings["modelChannel"] | null, canUseRemoteChannel: boolean, canUsePersonalChannel: boolean) {
+    const channelMode = canUseRemoteChannel && canUsePersonalChannel ? config.channelMode : canUseRemoteChannel ? "remote" : "local";
+    const canUseChannelMode = channelMode === "remote" ? canUseRemoteChannel : canUsePersonalChannel;
+    const availableModels = normalizeModelList(modelChannel?.availableModels || []);
+    const availableModelSet = new Set(availableModels);
+    const publicChannels = (canUseChannelMode ? modelChannel?.channels || config.publicChannels : [])
+        .filter((channel) => channelMode === "local" || channel.hasSystemApiKey)
+        .map((channel) => ({
+            ...channel,
+            models: normalizeModelList(channel.models).filter((model) => !availableModelSet.size || availableModelSet.has(model)),
+        }))
+        .filter((channel) => channel.models.length > 0);
     if (channelMode === "local" || !modelChannel) {
         const localChannels = normalizeLocalChannels(config);
         return {
@@ -196,14 +207,14 @@ function resolveEffectiveConfig(config: AiConfig, modelChannel: AdminPublicSetti
             channelMode,
             localChannels,
             models: normalizeModelList(localChannels.flatMap((channel) => channel.models)),
-            publicChannels: modelChannel?.channels || [],
+            publicChannels,
         };
     }
-    const models = modelChannel.availableModels;
-    const textModels = filterChannelModelsByCapability(modelChannel.channels, "text", models);
-    const imageModels = filterChannelModelsByCapability(modelChannel.channels, "image", models);
-    const videoModels = filterChannelModelsByCapability(modelChannel.channels, "video", models);
-    const audioModels = filterChannelModelsByCapability(modelChannel.channels, "audio", models);
+    const models = normalizeModelList(publicChannels.flatMap((channel) => channel.models || []));
+    const textModels = filterChannelModelsByCapability(publicChannels, "text", models);
+    const imageModels = filterChannelModelsByCapability(publicChannels, "image", models);
+    const videoModels = filterChannelModelsByCapability(publicChannels, "video", models);
+    const audioModels = filterChannelModelsByCapability(publicChannels, "audio", models);
     const fallbackTextModel = validDefault(modelChannel.defaultTextModel, textModels) || preferredModel(textModels, isTextModelName) || textModels[0] || "";
     const fallbackModel = validDefault(modelChannel.defaultModel, textModels) || fallbackTextModel;
     const fallbackImageModel = validDefault(modelChannel.defaultImageModel, imageModels) || preferredModel(imageModels, isImageModelName);
@@ -482,56 +493,57 @@ export const useConfigStore = create<ConfigStore>()(
                 const config = { ...defaultConfig, ...persistedConfig };
                 const localChannels = normalizeLocalChannels(config);
                 const localModels = normalizeModelList(localChannels.flatMap((channel) => channel.models));
-                return {
-                    ...current,
-                    config: {
-                        ...config,
-                        localChannels,
-                        models: localModels,
-                        baseUrl: localChannels[0]?.baseUrl || config.baseUrl,
-                        apiKey: localChannels[0]?.apiKey || config.apiKey,
-                        imageChannelId: config.imageChannelId || localChannels[0]?.id || "",
-                        videoChannelId: config.videoChannelId || localChannels[0]?.id || "",
-                        textChannelId: config.textChannelId || localChannels[0]?.id || "",
-                        audioChannelId: config.audioChannelId || localChannels[0]?.id || "",
-                        activeChannelId: config.activeChannelId || "",
-                        syncStorageConfig: config.syncStorageConfig === true,
-                        syncWebDAVStorageConfig: config.syncWebDAVStorageConfig === true,
-                        channelMode: config.channelMode || "remote",
-                        imageModel: config.imageModel || config.model,
-                        videoModel: config.videoModel || "grok-imagine-video",
-                        textModel: config.textModel || config.model,
-                        audioModel: config.audioModel || defaultConfig.audioModel,
-                        audioVoice: config.audioVoice || defaultConfig.audioVoice,
-                        audioFormat: config.audioFormat || defaultConfig.audioFormat,
-                        audioSpeed: config.audioSpeed || defaultConfig.audioSpeed,
-                        grokTtsVoice: config.grokTtsVoice || defaultConfig.grokTtsVoice,
-                        grokTtsLanguage: config.grokTtsLanguage || defaultConfig.grokTtsLanguage,
-                        grokTtsFormat: config.grokTtsFormat || defaultConfig.grokTtsFormat,
-                        grokTtsSpeed: config.grokTtsSpeed || defaultConfig.grokTtsSpeed,
-                        glmTtsVoice: config.glmTtsVoice || defaultConfig.glmTtsVoice,
-                        glmTtsFormat: config.glmTtsFormat || defaultConfig.glmTtsFormat,
-                        glmTtsSpeed: config.glmTtsSpeed || defaultConfig.glmTtsSpeed,
-                        geminiTtsVoice: config.geminiTtsVoice || defaultConfig.geminiTtsVoice,
-                        systemPrompts: config.systemPrompts?.image ? config.systemPrompts : defaultConfig.systemPrompts,
-                        audioInstructions: config.audioInstructions || "",
-                        videoSeconds: config.videoSeconds || "6",
-                        videoMode: config.videoMode || "std",
-                        videoNegativePrompt: config.videoNegativePrompt || "",
-                        videoMultiShot: config.videoMultiShot || "false",
-                        videoShotType: config.videoShotType || "intelligence",
-                        videoMultiPrompt: Array.isArray(config.videoMultiPrompt) && config.videoMultiPrompt.length ? config.videoMultiPrompt : defaultConfig.videoMultiPrompt,
-                        videoElementList: Array.isArray(config.videoElementList) && config.videoElementList.length ? config.videoElementList : defaultConfig.videoElementList,
-                        vquality: config.vquality || "720",
-                        videoGenerateAudio: config.videoGenerateAudio || "false",
-                        videoWatermark: config.videoWatermark || "false",
-                        videoCharacterOrientation: config.videoCharacterOrientation === "image" ? "image" : "video",
-                        canvasImageCount: config.canvasImageCount || "1",
-                        imageModels: filterChannelModelsByCapability(localChannels, "image"),
-                        videoModels: filterChannelModelsByCapability(localChannels, "video"),
-                        textModels: filterChannelModelsByCapability(localChannels, "text"),
-                        audioModels: filterChannelModelsByCapability(localChannels, "audio"),
-                    },
+                const restoredConfig: AiConfig = {
+                    ...config,
+                    localChannels,
+                    models: localModels,
+                    baseUrl: localChannels[0]?.baseUrl || config.baseUrl,
+                    apiKey: localChannels[0]?.apiKey || config.apiKey,
+                    publicChannels: [],
+                    imageChannelId: config.imageChannelId || localChannels[0]?.id || "",
+                    videoChannelId: config.videoChannelId || localChannels[0]?.id || "",
+                    textChannelId: config.textChannelId || localChannels[0]?.id || "",
+                    audioChannelId: config.audioChannelId || localChannels[0]?.id || "",
+                    activeChannelId: config.activeChannelId || "",
+                    syncStorageConfig: config.syncStorageConfig === true,
+                    syncWebDAVStorageConfig: config.syncWebDAVStorageConfig === true,
+                    channelMode: config.channelMode || defaultConfig.channelMode,
+                    imageModel: config.imageModel || config.model,
+                    videoModel: config.videoModel || defaultConfig.videoModel,
+                    textModel: config.textModel || config.model,
+                    audioModel: config.audioModel || defaultConfig.audioModel,
+                    audioVoice: config.audioVoice || defaultConfig.audioVoice,
+                    audioFormat: config.audioFormat || defaultConfig.audioFormat,
+                    audioSpeed: config.audioSpeed || defaultConfig.audioSpeed,
+                    audioInstructions: config.audioInstructions || defaultConfig.audioInstructions,
+                    grokTtsVoice: config.grokTtsVoice || defaultConfig.grokTtsVoice,
+                    grokTtsLanguage: config.grokTtsLanguage || defaultConfig.grokTtsLanguage,
+                    grokTtsFormat: config.grokTtsFormat || defaultConfig.grokTtsFormat,
+                    grokTtsSpeed: config.grokTtsSpeed || defaultConfig.grokTtsSpeed,
+                    glmTtsVoice: config.glmTtsVoice || defaultConfig.glmTtsVoice,
+                    glmTtsFormat: config.glmTtsFormat || defaultConfig.glmTtsFormat,
+                    glmTtsSpeed: config.glmTtsSpeed || defaultConfig.glmTtsSpeed,
+                    mimoTtsVoice: config.mimoTtsVoice || defaultConfig.mimoTtsVoice,
+                    mimoTtsFormat: config.mimoTtsFormat || defaultConfig.mimoTtsFormat,
+                    mimoVoiceDesignPrompt: config.mimoVoiceDesignPrompt || defaultConfig.mimoVoiceDesignPrompt,
+                    geminiTtsVoice: config.geminiTtsVoice || defaultConfig.geminiTtsVoice,
+                    systemPrompts: { ...defaultConfig.systemPrompts, ...(config.systemPrompts || {}) },
+                    videoSeconds: config.videoSeconds || defaultConfig.videoSeconds,
+                    videoMode: config.videoMode || defaultConfig.videoMode,
+                    videoNegativePrompt: config.videoNegativePrompt || defaultConfig.videoNegativePrompt,
+                    videoMultiShot: config.videoMultiShot || defaultConfig.videoMultiShot,
+                    videoShotType: config.videoShotType || defaultConfig.videoShotType,
+                    videoMultiPrompt: Array.isArray(config.videoMultiPrompt) && config.videoMultiPrompt.length ? config.videoMultiPrompt : defaultConfig.videoMultiPrompt,
+                    videoElementList: Array.isArray(config.videoElementList) && config.videoElementList.length ? config.videoElementList : defaultConfig.videoElementList,
+                    vquality: config.vquality || defaultConfig.vquality,
+                    videoGenerateAudio: config.videoGenerateAudio || defaultConfig.videoGenerateAudio,
+                    videoWatermark: config.videoWatermark || defaultConfig.videoWatermark,
+                    videoCharacterOrientation: config.videoCharacterOrientation === "image" ? "image" : "video",
+                    canvasImageCount: config.canvasImageCount || defaultConfig.canvasImageCount,
+                    imageModels: filterChannelModelsByCapability(localChannels, "image"),
+                    videoModels: filterChannelModelsByCapability(localChannels, "video"),
+                    textModels: filterChannelModelsByCapability(localChannels, "text"),
+                    audioModels: filterChannelModelsByCapability(localChannels, "audio"),
                 };
                 return { ...current, modelConfigOwnerId: "", isModelConfigReady: true, modelConfigLoadFailed: false, modelConfigLoadVersion: 0, anonymousConfig: restoredConfig, config: restoredConfig };
             },
@@ -597,6 +609,7 @@ export function normalizeLocalChannels(config: Partial<AiConfig>): LocalModelCha
     const channels = Array.isArray(config.localChannels) ? config.localChannels : [];
     const normalized: LocalModelChannel[] = channels.map((channel, index) => ({
         id: channel.id || `local-${index + 1}`,
+        ...(channel.systemChannelId ? { systemChannelId: channel.systemChannelId } : {}),
         protocol: channel.protocol || "openai",
         name: typeof channel.name === "string" ? channel.name : `本地渠道 ${index + 1}`,
         baseUrl: channel.baseUrl || "",
@@ -607,6 +620,16 @@ export function normalizeLocalChannels(config: Partial<AiConfig>): LocalModelCha
         normalized.push({ id: "local-default", protocol: "openai", name: "本地直连", baseUrl: config.baseUrl || defaultConfig.baseUrl, apiKey: config.apiKey || "", models: Array.isArray(config.models) ? config.models.filter(Boolean) : [] });
     }
     return normalized;
+}
+
+function configForBrowserStorage(config: AiConfig): AiConfig {
+    return {
+        ...config,
+        localChannels: normalizeLocalChannels(config),
+        baseUrl: "",
+        apiKey: "",
+        publicChannels: [],
+    };
 }
 
 export function channelIdForActiveModel(config: AiConfig) {
@@ -631,9 +654,12 @@ export function channelIdForActiveModel(config: AiConfig) {
 
 export function localChannelForActiveModel(config: AiConfig) {
     const channelId = channelIdForActiveModel(config);
+    const localChannels = normalizeLocalChannels(config);
+    const localChannel = localChannels.find((channel) => !channel.systemChannelId && channel.id === channelId && (!channel.models.length || channel.models.includes(config.model)));
+    if (localChannel) return localChannel;
     const systemChannel = config.publicChannels.find((channel) => channel.id === channelId && channel.models.includes(config.model));
     if (!systemChannel) return undefined;
-    const personalChannel = normalizeLocalChannels(config).find((channel) => channel.systemChannelId === systemChannel.id);
+    const personalChannel = localChannels.find((channel) => channel.systemChannelId === systemChannel.id);
     return {
         ...systemChannel,
         apiKey: personalChannel?.apiKey || "",

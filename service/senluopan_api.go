@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -116,13 +115,10 @@ func requestSenluopanDirectLinkResult(provider model.StorageProvider, objectKey 
 	}
 
 	// Cloudreve 的 WebDAV 固定挂载在 /dav，端点 path 去掉 /dav 挂载段后剩余的部分，
-	// 对应 cloudreve://my/ 下的真实目录前缀。端点只有 /dav 时，使用远程目录作为该前缀。
-	// 例如端点 https://host/dav + 远程目录 canvas + objectKey canvas/user-x/... => my/canvas/canvas/user-x/...
-	davPrefix, relativePath := senluopanCloudrevePath(provider, objectKey)
-	log.Printf("[DEBUG] senluopan path: endpoint=%s davPrefix=%s objectKey=%s relativePath=%s", provider.Endpoint, davPrefix, objectKey, relativePath)
+	// 对应 cloudreve://my/ 下的真实目录前缀。端点只有 /dav 时，对象键已经包含远程目录。
+	_, relativePath := senluopanCloudrevePath(provider, objectKey)
 
 	fileURL := url.URL{Scheme: "cloudreve", Host: "my", Path: "/" + relativePath}
-	log.Printf("[DEBUG] senluopan cloudreve URI: %s", fileURL.String())
 	body, err := json.Marshal(map[string][]string{"uris": {fileURL.String()}})
 	if err != nil {
 		return "", "", err
@@ -158,19 +154,25 @@ func requestSenluopanDirectLinkResult(provider model.StorageProvider, objectKey 
 		}
 		return "", "", fmt.Errorf("森络盘创建直链失败: code=%d", payload.Code)
 	}
-	if len(payload.Data) == 0 || strings.TrimSpace(payload.Data[0].Link) == "" {
+	if len(payload.Data) == 0 {
 		return "", "", errors.New("森络盘创建直链未返回地址")
 	}
 	link := strings.TrimSpace(payload.Data[0].Link)
+	if link == "" {
+		link = strings.TrimSpace(payload.Data[0].FileURL)
+	}
+	if link == "" {
+		return "", "", errors.New("森络盘创建直链未返回地址")
+	}
 	parsed, err := url.Parse(link)
 	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") {
 		return "", "", errors.New("森络盘创建直链地址无效")
 	}
 	segments := strings.Split(strings.Trim(parsed.Path, "/"), "/")
-	if len(segments) < 2 || segments[0] != "f" || segments[1] == "" {
-		return "", "", errors.New("森络盘创建直链未返回直链 ID")
+	if len(segments) >= 2 && segments[0] == "f" && segments[1] != "" {
+		return link, segments[1], nil
 	}
-	return link, segments[1], nil
+	return link, "", nil
 }
 
 // senluopanCloudrevePrefix 从 WebDAV 端点 URL 解析出 cloudreve://my/ 下的目录前缀。
@@ -194,10 +196,12 @@ func senluopanCloudrevePrefix(endpoint string) string {
 
 func senluopanCloudrevePath(provider model.StorageProvider, objectKey string) (string, string) {
 	davPrefix := senluopanCloudrevePrefix(provider.Endpoint)
-	if davPrefix == "" {
-		davPrefix = strings.Trim(provider.PathPrefix, "/")
+	prefix := strings.Trim(davPrefix, "/")
+	key := strings.Trim(objectKey, "/")
+	relativePath := key
+	if prefix != "" && key != prefix && !strings.HasPrefix(key, prefix+"/") {
+		relativePath = prefix + "/" + key
 	}
-	relativePath := strings.Trim(davPrefix+"/"+strings.TrimLeft(objectKey, "/"), "/")
 	return davPrefix, relativePath
 }
 

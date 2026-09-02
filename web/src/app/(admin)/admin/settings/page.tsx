@@ -2,14 +2,14 @@
 
 import { CheckCircleOutlined, DeleteOutlined, FormatPainterOutlined, LoadingOutlined, PlusOutlined, ReloadOutlined, SaveOutlined } from "@ant-design/icons";
 import { json } from "@codemirror/lang-json";
-import { App, Button, Card, Col, Drawer, Flex, Form, Input, InputNumber, Modal, Row, Segmented, Select, Space, Switch, Table, Tabs, Tag, Typography } from "antd";
+import { App, Button, Card, Checkbox, Col, Drawer, Flex, Form, Input, InputNumber, Modal, Row, Segmented, Select, Space, Switch, Table, Tabs, Tag, Typography } from "antd";
 import dynamic from "next/dynamic";
 import { useEffect, useMemo, useState } from "react";
 import { EditorView } from "@uiw/react-codemirror";
 
 import { ChannelModelSelectorModal } from "@/components/channel-model-selector-modal";
 import { modelChannelApiKeyUrls, modelChannelDefaultBaseUrls } from "@/lib/model-channel";
-import { fetchAdminSettings, fetchChannelModels, measureAdminStorageProvider, saveAdminSettings, testChannelModel, type AdminModelChannel, type AdminModelCost, type AdminSettings, type AdminStorageProvider } from "@/services/api/admin";
+import { checkAdminSenluopanAuth, fetchAdminSettings, fetchChannelModels, measureAdminStorageProvider, saveAdminSettings, testChannelModel, type AdminModelChannel, type AdminModelCost, type AdminSettings, type AdminStorageProvider } from "@/services/api/admin";
 import { useUserStore } from "@/stores/use-user-store";
 
 const CodeMirror = dynamic(() => import("@uiw/react-codemirror"), { ssr: false });
@@ -47,7 +47,7 @@ const emptySettings: AdminSettings = {
     private: { channels: [], promptSync: { enabled: true, cron: "0 0 * * *" }, aiLog: { localDirectReportEnabled: false, cleanup: { enabled: false, retentionDays: 14, cron: "0 3 * * *" } }, auth: { linuxDo: { clientId: "", clientSecret: "" } }, storage: { mode: "local_indexeddb", allowUserProvider: false, allowUserGlobalProvider: true, providers: [], roundRobinCursor: 0, capacityCheck: { enabled: false, cron: "0 */6 * * *" }, capacityLimitBytes: 9 * 1024 * 1024 * 1024 } },
 };
 const emptyChannel: AdminModelChannel = { id: "", protocol: "openai", name: "", baseUrl: modelChannelDefaultBaseUrls.openai, apiKey: "", models: [], weight: 1, timeout: 600, enabled: true, remark: "" };
-const emptyS3StorageProvider: AdminStorageProvider = { id: "", name: "", type: "s3", endpoint: "", region: "auto", bucket: "", accessKeyId: "", secretAccessKey: "", publicBaseUrl: "", pathPrefix: "canvas", username: "", password: "", weight: 1, enabled: true, ownerUserId: "", capacityBytes: 0, capacityCheckedAt: "", capacityExceeded: false };
+const emptyS3StorageProvider: AdminStorageProvider = { id: "", name: "", type: "s3", endpoint: "", apiEndpoint: "", apiAccessToken: "", apiRefreshToken: "", apiEmail: "", apiPassword: "", apiAccessExpires: 0, apiRefreshExpires: 0, region: "auto", bucket: "", accessKeyId: "", secretAccessKey: "", publicBaseUrl: "", pathPrefix: "canvas", username: "", password: "", weight: 1, enabled: true, ownerUserId: "", capacityBytes: 0, capacityCheckedAt: "", capacityExceeded: false };
 const emptyWebDAVStorageProvider: AdminStorageProvider = { ...emptyS3StorageProvider, name: "", type: "webdav", region: "" };
 
 type SettingsTabKey = "public" | "private";
@@ -576,6 +576,16 @@ export default function AdminSettingsPage() {
                                 </Card>
                                 <Card size="small" title="AI 调用日志">
                                     <Row gutter={16}>
+                                        <Col xs={24} md={6}>
+                                            <Form.Item
+                                                name={["private", "aiLog", "localDirectReportEnabled"]}
+                                                label="本地直连日志上报"
+                                                valuePropName="checked"
+                                                extra="关闭后本地直连不上报；云端渠道仍默认记录。"
+                                            >
+                                                <Switch />
+                                            </Form.Item>
+                                        </Col>
                                         <Col xs={24} md={8}>
                                             <Form.Item name={["private", "aiLog", "cleanup", "enabled"]} label="开启自动清理" valuePropName="checked" extra="日志按天写入本地文件，不保存到 SQLite。">
                                                 <Switch />
@@ -636,8 +646,10 @@ export default function AdminSettingsPage() {
                                                     新增 WebDAV 配置
                                                 </Button>
                                                 {fields.map((field) => {
-                                                    const provider = storageProviders[field.name] || emptyS3StorageProvider;
+                                                    const provider = normalizeStorageProvider(storageProviders[field.name] || emptyS3StorageProvider);
                                                     const isWebDAV = provider.type === "webdav";
+                                                    const hasSenluopanConfig = isWebDAV && Boolean((provider.apiEndpoint || "").trim());
+                                                    const blockedByOtherType = storageProviders.some((item: AdminStorageProvider, index: number) => index !== field.name && item.enabled && item.type !== provider.type);
                                                     const weightField = (
                                                         <Col xs={24} md={3}>
                                                             <Form.Item name={[field.name, "weight"]} label="权重">
@@ -655,7 +667,12 @@ export default function AdminSettingsPage() {
                                                                     <Button size="small" loading={measuringProviderIndex === field.name} onClick={() => void measureStorageProviderAt(field.name)}>
                                                                         统计容量
                                                                     </Button>
-                                                                    <Button danger size="small" icon={<DeleteOutlined />} onClick={() => remove(field.name)} />
+                                                                    {hasSenluopanConfig ? (
+                                                                        <Button size="small" loading={checkingSenluopanIndex === field.name} onClick={() => void checkSenluopanProviderAt(field.name)}>
+                                                                            检查认证
+                                                                        </Button>
+                                                                    ) : null}
+                                                                    <Button danger size="small" icon={<DeleteOutlined />} onClick={() => { remove(field.name); setSenluopanAuthStatus({}); }} />
                                                                 </Flex>
                                                             }
                                                         >
@@ -690,6 +707,7 @@ export default function AdminSettingsPage() {
                                                                 <Col xs={24} md={4}>
                                                                     <Form.Item name={[field.name, "enabled"]} label="启用" valuePropName="checked">
                                                                         <Switch
+                                                                            disabled={blockedByOtherType}
                                                                             onChange={(checked) => {
                                                                                 if (!checked) return;
                                                                                 const providers = form.getFieldValue(["private", "storage", "providers"]) || [];
@@ -721,7 +739,31 @@ export default function AdminSettingsPage() {
                                                                                 <Input.Password placeholder="留空沿用已保存密码" />
                                                                             </Form.Item>
                                                                         </Col>
-                                                                        <Col xs={0} md={6} />
+                                                                        <Col xs={24} md={12}>
+                                                                            <Form.Item name={[field.name, "apiEndpoint"]} label="森络盘 API 地址">
+                                                                                <Input placeholder="https://www.senluopan.com/api/v4" onChange={() => clearSenluopanAuthStatus(field.name)} />
+                                                                            </Form.Item>
+                                                                        </Col>
+                                                                        <Col xs={24} md={6}>
+                                                                            <Form.Item name={[field.name, "apiEmail"]} label="森络盘账号邮箱">
+                                                                                <Input onChange={() => clearSenluopanAuthStatus(field.name)} />
+                                                                            </Form.Item>
+                                                                        </Col>
+                                                                        <Col xs={24} md={6}>
+                                                                            <Form.Item name={[field.name, "apiPassword"]} label="森络盘账号密码">
+                                                                                <Input.Password placeholder="留空沿用已保存密码" onChange={() => clearSenluopanAuthStatus(field.name)} />
+                                                                            </Form.Item>
+                                                                        </Col>
+                                                                        <Col xs={24} md={12}>
+                                                                            <Form.Item name={[field.name, "apiAccessToken"]} label="森络盘 Access Token">
+                                                                                <Input.Password placeholder="留空沿用已保存令牌" onChange={() => clearSenluopanAuthStatus(field.name)} />
+                                                                            </Form.Item>
+                                                                        </Col>
+                                                                        {hasSenluopanConfig && senluopanAuthStatus[field.name] ? (
+                                                                            <Col xs={24}>
+                                                                                <Typography.Text type="secondary">{senluopanAuthStatus[field.name]}</Typography.Text>
+                                                                            </Col>
+                                                                        ) : null}
                                                                     </>
                                                                 ) : (
                                                                     <>
@@ -1086,6 +1128,7 @@ function normalizePrivateSetting(setting: Partial<AdminSettings["private"]> = {}
             cron: setting.promptSync?.cron || "0 0 * * *",
         },
         aiLog: {
+            localDirectReportEnabled: setting.aiLog?.localDirectReportEnabled === true,
             cleanup: {
                 enabled: setting.aiLog?.cleanup?.enabled === true,
                 retentionDays: Number(setting.aiLog?.cleanup?.retentionDays) || 14,
@@ -1119,7 +1162,14 @@ function normalizeStorageProvider(item: Partial<AdminStorageProvider> = {}): Adm
         ...(type === "webdav" ? emptyWebDAVStorageProvider : emptyS3StorageProvider),
         ...item,
         id: item.id || "",
+        name: item.name || "",
         type,
+        endpoint: item.endpoint || "",
+        apiEndpoint: item.apiEndpoint || "",
+        apiAccessToken: item.apiAccessToken || "",
+        apiRefreshToken: item.apiRefreshToken || "",
+        apiEmail: item.apiEmail || "",
+        apiPassword: item.apiPassword || "",
         region: type === "s3" ? item.region || "auto" : "",
         weight: Math.max(1, Number(item.weight) || 1),
         enabled: item.enabled !== false,
@@ -1128,14 +1178,6 @@ function normalizeStorageProvider(item: Partial<AdminStorageProvider> = {}): Adm
         capacityExceeded: item.capacityExceeded === true,
         apiAccessExpires: Number(item.apiAccessExpires) || 0,
         apiRefreshExpires: Number(item.apiRefreshExpires) || 0,
-    };
-}
-
-function newAdminStorageProvider(type: AdminStorageProvider["type"], providers: AdminStorageProvider[]) {
-    const template = type === "webdav" ? emptyWebDAVStorageProvider : emptyS3StorageProvider;
-    return {
-        ...template,
-        enabled: !providers.some((provider) => provider.enabled && provider.type !== type),
     };
 }
 

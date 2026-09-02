@@ -7,6 +7,7 @@ type StorageObject struct {
 	Bucket     string `json:"bucket"`
 	ObjectKey  string `json:"objectKey" gorm:"uniqueIndex"`
 	PublicURL  string `json:"publicUrl"`
+	DirectLinkID string `json:"directLinkId"`
 	MimeType   string `json:"mimeType"`
 	Bytes      int64  `json:"bytes"`
 	Width      int    `json:"width"`

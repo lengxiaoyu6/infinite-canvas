@@ -257,6 +257,9 @@ func hidePrivateAPIKeys(settings model.Settings) model.Settings {
 	for i := range settings.Private.Storage.Providers {
 		settings.Private.Storage.Providers[i].SecretAccessKey = ""
 		settings.Private.Storage.Providers[i].Password = ""
+		settings.Private.Storage.Providers[i].APIAccessToken = ""
+		settings.Private.Storage.Providers[i].APIRefreshToken = ""
+		settings.Private.Storage.Providers[i].APIPassword = ""
 	}
 	settings.Private.Auth.LinuxDo.ClientSecret = ""
 	return settings
@@ -955,15 +958,30 @@ func (err safeMessageError) SafeMessage() string {
 func keepPrivateStorageSecrets(settings *model.Settings, saved model.Settings) {
 	for i := range settings.Private.Storage.Providers {
 		current := &settings.Private.Storage.Providers[i]
-		if strings.TrimSpace(current.SecretAccessKey) != "" && strings.TrimSpace(current.Password) != "" {
-			continue
-		}
 		if provider, ok := findSavedStorageProvider(*current, saved.Private.Storage.Providers, i); ok {
 			if strings.TrimSpace(current.SecretAccessKey) == "" {
 				current.SecretAccessKey = provider.SecretAccessKey
 			}
 			if strings.TrimSpace(current.Password) == "" {
 				current.Password = provider.Password
+			}
+			if strings.TrimSpace(current.APIAccessToken) == "" {
+				current.APIAccessToken = provider.APIAccessToken
+			}
+			if strings.TrimSpace(current.APIRefreshToken) == "" {
+				current.APIRefreshToken = provider.APIRefreshToken
+			}
+			if strings.TrimSpace(current.APIPassword) == "" {
+				current.APIPassword = provider.APIPassword
+			}
+			if strings.TrimSpace(current.APIEmail) == "" {
+				current.APIEmail = provider.APIEmail
+			}
+			if current.APIAccessExpires == 0 {
+				current.APIAccessExpires = provider.APIAccessExpires
+			}
+			if current.APIRefreshExpires == 0 {
+				current.APIRefreshExpires = provider.APIRefreshExpires
 			}
 		}
 	}
@@ -1110,15 +1128,16 @@ func publicChannelInfos(channels []model.ModelChannel, availableModels []string)
 			continue
 		}
 		result = append(result, model.PublicModelChannelInfo{
-			ID:       channel.ID,
-			Protocol: channel.Protocol,
-			Name:     channel.Name,
-			BaseURL:  channel.BaseURL,
-			Models:   append([]string{}, channel.Models...),
-			Weight:   channel.Weight,
-			Timeout:  channel.Timeout,
-			Enabled:  channel.Enabled,
-			Remark:   channel.Remark,
+			ID:              channel.ID,
+			Protocol:        channel.Protocol,
+			Name:            channel.Name,
+			BaseURL:         channel.BaseURL,
+			Models:          channelModels,
+			Weight:          channel.Weight,
+			Timeout:         channel.Timeout,
+			Enabled:         channel.Enabled,
+			Remark:          channel.Remark,
+			HasSystemAPIKey: strings.TrimSpace(channel.APIKey) != "",
 		})
 	}
 	return result

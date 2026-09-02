@@ -7,6 +7,7 @@ import { useEffect, useState } from "react";
 import { ChannelModelSelectorModal } from "@/components/channel-model-selector-modal";
 import { GrokTtsVoiceSelect } from "@/components/grok-tts-voice-select";
 import { ModelPicker } from "@/components/model-picker";
+import { fetchImageModels } from "@/services/api/image";
 import { checkUserSenluopanAuth, fetchUserConfig, measureUserStorageProvider, syncUserModelConfig, syncUserStorageProvider } from "@/services/api/user-config";
 import { clearStorageConfigCache as clearFileStorageCache } from "@/services/file-storage";
 import { clearStorageConfigCache as clearImageStorageCache, defaultUserStorageProvider, defaultUserWebDAVStorageProvider, loadStorageConfig, loadUserS3StorageProvider, loadUserWebDAVStorageProvider, saveUserStorageProvider, saveUserWebDAVStorageProvider, type UserStorageProvider } from "@/services/image-storage";
@@ -16,7 +17,7 @@ import { isGeminiConfig, isGeminiTtsModel } from "@/lib/gemini";
 import { geminiTtsVoiceOptions, normalizeGeminiTtsVoice } from "@/lib/gemini-tts";
 import { isMimoPresetTtsModel, isMimoTtsModel, isMimoVoiceCloneModel, isMimoVoiceDesignModel, mimoTtsFormatOptions, mimoTtsVoiceOptions } from "@/lib/mimo-tts";
 import { modelChannelApiKeyUrls, modelChannelDefaultBaseUrls } from "@/lib/model-channel";
-import { filterChannelModelsByCapability, normalizeLocalChannels, useConfigStore, useEffectiveConfig, type AiConfig, type LocalModelChannel, type ModelCapability } from "@/stores/use-config-store";
+import { filterChannelModelsByCapability, normalizeLocalChannels, useConfigStore, useEffectiveConfig, useIsModelConfigReady, type AiConfig, type LocalModelChannel, type ModelCapability } from "@/stores/use-config-store";
 import { useUserStore } from "@/stores/use-user-store";
 
 type ModelGroup = {
@@ -37,8 +38,10 @@ const modelGroups: ModelGroup[] = [
 
 export function AppConfigModal() {
     const { message } = App.useApp();
+    const [loadingModels, setLoadingModels] = useState(false);
     const [savingConfig, setSavingConfig] = useState(false);
     const [modelSelectChannelId, setModelSelectChannelId] = useState("");
+    const [modelConfigReloadVersion, setModelConfigReloadVersion] = useState(0);
     const [remoteStorageSyncEnabled, setRemoteStorageSyncEnabled] = useState(false);
     const [remoteWebDAVStorageSyncEnabled, setRemoteWebDAVStorageSyncEnabled] = useState(false);
     const [allowUserStorageProvider, setAllowUserStorageProvider] = useState(false);
@@ -47,6 +50,8 @@ export function AppConfigModal() {
     const [measuringStorageType, setMeasuringStorageType] = useState<"s3" | "webdav" | null>(null);
     const [storageUsageText, setStorageUsageText] = useState("");
     const [webDAVStorageUsageText, setWebDAVStorageUsageText] = useState("");
+    const [checkingSenluopan, setCheckingSenluopan] = useState(false);
+    const [senluopanAuthText, setSenluopanAuthText] = useState("");
     const config = useConfigStore((state) => state.config);
     const updateConfig = useConfigStore((state) => state.updateConfig);
     const switchModelConfigOwner = useConfigStore((state) => state.switchModelConfigOwner);
@@ -68,32 +73,34 @@ export function AppConfigModal() {
     const canUseRemoteChannel = isLoggedIn && (user?.role === "admin" || modelChannel?.allowUserRemoteChannel === true);
     const allowCustomChannel = isLoggedIn && modelChannel?.allowCustomChannel === true;
     const effectiveMode = canUseRemoteChannel ? (allowCustomChannel ? config.channelMode : "remote") : "local";
-    const localModelConfig: AiConfig = effectiveMode === "local" && config.channelMode !== "local" ? { ...config, channelMode: "local" } : config;
-    const modelConfig = effectiveMode === "remote" ? effectiveConfig : localModelConfig;
-    const canUseUserStorageProvider = allowUserStorageProvider;
+    const modelConfig = effectiveConfig;
+    const canUseUserStorageProvider = isLoggedIn && allowUserStorageProvider;
+    const hasSenluopanConfig = Boolean((userWebDAVStorage.apiEndpoint || "").trim());
     const glmTts = isGlmTtsModel(config.audioModel);
     const grokTts = isGrok2APITtsConfig({ ...modelConfig, model: config.audioModel, audioModel: config.audioModel }, config.audioModel);
     const geminiTts = isGeminiTtsModel(config.audioModel) && isGeminiConfig({ ...modelConfig, model: config.audioModel, audioModel: config.audioModel }, config.audioModel);
     const modelSelectChannel = normalizeLocalChannels(config).find((channel) => channel.id === modelSelectChannelId);
+    const selectedChannelIds = new Set(modelGroups.map((group) => modelConfig[group.channelKey]).filter(Boolean));
+    const selectedPersonalChannels = effectiveMode === "local" ? modelConfig.publicChannels.filter((channel) => selectedChannelIds.has(channel.id)) : [];
 
     useEffect(() => {
         setUserStorage(loadUserS3StorageProvider() || defaultUserStorageProvider());
         setUserWebDAVStorage(loadUserWebDAVStorageProvider() || defaultUserWebDAVStorageProvider());
-        if (!isConfigOpen || !token) return;
+        if (!isConfigOpen || !token || !user?.id) return;
+        const userId = user.id;
+        switchModelConfigOwner(userId);
+        const loadVersion = beginUserModelConfigLoad(userId);
+        if (!loadVersion) return;
         let canceled = false;
         void fetchUserConfig(token)
             .then((payload) => {
+                if (canceled) return;
                 const remoteConfig = payload.modelConfig;
                 const syncS3 = remoteConfig?.syncStorageConfig === true;
                 const syncWebDAV = remoteConfig?.syncWebDAVStorageConfig === true;
+                applyUserModelConfig(userId, loadVersion, remoteConfig);
                 setRemoteStorageSyncEnabled(syncS3);
                 setRemoteWebDAVStorageSyncEnabled(syncWebDAV);
-                if (remoteConfig) {
-                    Object.entries(remoteConfig)
-                        .forEach(([key, value]) => updateConfig(key as keyof AiConfig, value as never));
-                }
-                updateConfig("syncStorageConfig", syncS3);
-                updateConfig("syncWebDAVStorageConfig", syncWebDAV);
                 if (syncS3 && payload.storageProvider?.s3) {
                     const next = { ...defaultUserStorageProvider(), ...payload.storageProvider.s3, type: "s3" as const };
                     setUserStorage(next);
@@ -105,7 +112,9 @@ export function AppConfigModal() {
                     saveUserWebDAVStorageProvider(next);
                 }
             })
-            .catch(() => { });
+            .catch(() => {
+                failUserModelConfigLoad(userId, loadVersion);
+            });
         return () => {
             canceled = true;
         };
@@ -132,7 +141,7 @@ export function AppConfigModal() {
             return;
         }
         const personalChannels = normalizeLocalChannels(config);
-        const localIncomplete = effectiveMode === "local" && selectedPersonalChannels.some((channel) => !personalChannels.find((item) => item.systemChannelId === channel.id)?.apiKey.trim());
+        const localIncomplete = effectiveMode === "local" && personalChannels.some((channel) => channel.systemChannelId ? !channel.apiKey.trim() : !channel.baseUrl.trim() || !channel.apiKey.trim());
         const modelIncomplete = !modelConfig.imageModel.trim() || !modelConfig.videoModel.trim() || !modelConfig.textModel.trim();
         if (userStorage.enabled && userWebDAVStorage.enabled) {
             message.error("S3/R2 与 WebDAV 不能同时启用");
@@ -175,23 +184,11 @@ export function AppConfigModal() {
 
     const updatePersonalAPIKey = (systemChannelId: string, apiKey: string, models: string[]) => {
         const channels = normalizeLocalChannels(config);
-        if (channels.some((channel) => !channel.baseUrl.trim() || !channel.apiKey.trim())) {
-            message.error("请先填写所有本地渠道的 Base URL 和 API Key");
-            return;
-        }
-        setLoadingModels(true);
-        try {
-            const results = await Promise.allSettled(channels.map(async (channel) => fetchImageModels(configForLocalChannel(config, channel))));
-            updateLocalChannels(channels.map((channel, index) => {
-                const result = results[index];
-                return result.status === "fulfilled" ? { ...channel, models: result.value } : channel;
-            }));
-            const failedCount = results.filter((result) => result.status === "rejected").length;
-            if (failedCount) message.warning(`${failedCount} 个渠道拉取失败，已保留原有模型，可在“选择”中手动增加模型`);
-            else message.success("模型列表已更新");
-        } finally {
-            setLoadingModels(false);
-        }
+        const current = channels.find((channel) => channel.systemChannelId === systemChannelId);
+        const next = current
+            ? { ...current, apiKey, models: [...models] }
+            : { id: systemChannelId, systemChannelId, protocol: "openai" as const, name: "", baseUrl: "", apiKey, models: [...models] };
+        updateConfig("localChannels", current ? channels.map((channel) => channel.systemChannelId === systemChannelId ? next : channel) : [...channels, next]);
     };
 
     const updateLocalChannels = (channels: LocalModelChannel[]) => {
@@ -544,12 +541,18 @@ export function AppConfigModal() {
                                         <div className="mt-1 text-xs text-stone-500">
                                             开启后，新生成图片和媒体文件会优先保存到你的 WebDAV。
                                             {webDAVStorageUsageText ? <>当前容量：{webDAVStorageUsageText}</> : null}
+                                            {hasSenluopanConfig && senluopanAuthText ? <span className="mt-1 block">{senluopanAuthText}</span> : null}
                                         </div>
                                     </div>
                                     <div className="flex shrink-0 flex-wrap items-center justify-end gap-2">
                                         <Button size="small" loading={measuringStorageType === "webdav"} onClick={() => void measureStorage(userWebDAVStorage)}>
                                             统计容量
                                         </Button>
+                                        {hasSenluopanConfig ? (
+                                            <Button size="small" loading={checkingSenluopan} onClick={() => void checkSenluopanAuth()}>
+                                                检查认证
+                                            </Button>
+                                        ) : null}
                                         <span className="text-xs text-stone-500">自动同步</span>
                                         <Switch size="small" checked={config.syncWebDAVStorageConfig} onChange={(checked) => updateConfig("syncWebDAVStorageConfig", checked)} />
                                         <Switch checked={userWebDAVStorage.enabled} disabled={userStorage.enabled} onChange={(enabled) => setUserWebDAVStorage((value) => ({ ...value, enabled }))} />
@@ -562,6 +565,10 @@ export function AppConfigModal() {
                                         <Input value={userWebDAVStorage.pathPrefix} placeholder="远程目录" onChange={(event) => setUserWebDAVStorage((value) => ({ ...value, pathPrefix: event.target.value }))} />
                                         <Input value={userWebDAVStorage.username} placeholder="用户名" onChange={(event) => setUserWebDAVStorage((value) => ({ ...value, username: event.target.value }))} />
                                         <Input.Password value={userWebDAVStorage.password} placeholder="密码 / 应用密码" onChange={(event) => setUserWebDAVStorage((value) => ({ ...value, password: event.target.value }))} />
+                                        <Input value={userWebDAVStorage.apiEndpoint} placeholder="森络盘 API 地址，例如 https://www.senluopan.com/api/v4" onChange={(event) => updateSenluopanConfig("apiEndpoint", event.target.value)} />
+                                        <Input value={userWebDAVStorage.apiEmail} placeholder="森络盘账号邮箱" onChange={(event) => updateSenluopanConfig("apiEmail", event.target.value)} />
+                                        <Input.Password value={userWebDAVStorage.apiPassword} placeholder="森络盘账号密码" onChange={(event) => updateSenluopanConfig("apiPassword", event.target.value)} />
+                                        <Input.Password value={userWebDAVStorage.apiAccessToken} placeholder="森络盘 Access Token" onChange={(event) => updateSenluopanConfig("apiAccessToken", event.target.value)} />
                                     </div>
                                 ) : null}
                             </section>
@@ -626,6 +633,30 @@ function normalizeImageCount(value: string) {
     return String(Math.max(1, Math.min(15, Math.floor(Math.abs(Number(value)) || 3))));
 }
 
+function configForLocalChannel(config: AiConfig, channel: LocalModelChannel): AiConfig {
+    return {
+        ...config,
+        channelMode: "local",
+        baseUrl: channel.baseUrl,
+        apiKey: channel.apiKey,
+        localChannels: [{ ...channel }],
+        imageChannelId: channel.id,
+        videoChannelId: channel.id,
+        textChannelId: channel.id,
+        audioChannelId: channel.id,
+        model: channel.models[0] || config.model,
+    };
+}
+
+function channelIdForLocalModel(channels: LocalModelChannel[], model: string, currentId: string) {
+    if (!channels.length) return "";
+    if (channels.some((channel) => channel.id === currentId && (!model || channel.models.includes(model)))) return currentId;
+    return channels.find((channel) => model && channel.models.includes(model))?.id || channels[0].id;
+}
+
+function uniqueModels(models: string[]) {
+    return Array.from(new Set(models.map((model) => model.trim()).filter(Boolean)));
+}
 
 function formatTokenExpiry(expires: number) {
     return expires > 0 ? "有效期至 " + new Date(expires * 1000).toLocaleString("zh-CN", { hour12: false }) : "有效期由服务端管理";

@@ -277,6 +277,24 @@ func runCanvasImageTask(task model.CanvasImageTask, user model.AuthUser, body []
 		saveFailedCanvasImageTask(task, err.Error(), string(payload))
 		return
 	}
+	storageKey := ""
+	if imageData, detectedMimeType, fetchErr := imageCandidateBytes(imageURLs[0]); fetchErr == nil && len(imageData) > 0 {
+		if mimeType == "" {
+			mimeType = detectedMimeType
+		}
+		bytes = int64(len(imageData))
+		task.Width, task.Height = imageSize(imageData)
+		if object, uploadErr := service.UploadUserStorageObject(service.WithUser(context.Background(), user), "canvas-image"+extensionForTaskMime(mimeType), mimeType, imageData); uploadErr == nil {
+			imageURLs[0] = object.URL
+			storageKey = object.StorageKey
+			mimeType = object.MimeType
+			bytes = object.Bytes
+		} else {
+			log.Printf("upload canvas image to storage failed: user=%s task=%s err=%v", user.ID, task.ID, uploadErr)
+		}
+	} else if fetchErr != nil {
+		log.Printf("read canvas image for storage failed: user=%s task=%s err=%v", user.ID, task.ID, fetchErr)
+	}
 	task.Status = "completed"
 	task.Progress = 100
 	task.CompletedAt = taskTime()
@@ -285,11 +303,9 @@ func runCanvasImageTask(task model.CanvasImageTask, user model.AuthUser, body []
 	if collectAll {
 		task.ImageURLs = imageURLs
 	}
-	task.StorageKey = ""
+	task.StorageKey = storageKey
 	task.MimeType = mimeType
 	task.Bytes = bytes
-	task.Width = 0
-	task.Height = 0
 	task.Error = ""
 	task.ErrorDetail = ""
 	_, _ = service.SaveCanvasImageTask(task)
@@ -327,14 +343,25 @@ func runCanvasAudioTask(task model.CanvasAudioTask, user model.AuthUser, body []
 	if task.ContentType != "" && strings.HasPrefix(task.ContentType, "audio/") {
 		mimeType = task.ContentType
 	}
+	storageKey := ""
+	audioURL := "data:" + mimeType + ";base64," + base64.StdEncoding.EncodeToString(payload)
+	bytes := int64(len(payload))
+	if object, uploadErr := service.UploadUserStorageObject(service.WithUser(context.Background(), user), "canvas-audio"+extensionForTaskMime(mimeType), mimeType, payload); uploadErr == nil {
+		audioURL = object.URL
+		storageKey = object.StorageKey
+		mimeType = object.MimeType
+		bytes = object.Bytes
+	} else {
+		log.Printf("upload canvas audio to storage failed: user=%s task=%s err=%v", user.ID, task.ID, uploadErr)
+	}
 	task.Status = "completed"
 	task.Progress = 100
 	task.CompletedAt = taskTime()
 	task.ResponseBody = "[binary audio]"
-	task.AudioURL = "data:" + mimeType + ";base64," + base64.StdEncoding.EncodeToString(payload)
-	task.StorageKey = ""
+	task.AudioURL = audioURL
+	task.StorageKey = storageKey
 	task.MimeType = mimeType
-	task.Bytes = int64(len(payload))
+	task.Bytes = bytes
 	task.Error = ""
 	task.ErrorDetail = ""
 	_, _ = service.SaveCanvasAudioTask(task)
@@ -737,6 +764,28 @@ func imageSize(data []byte) (int, int) {
 		return 0, 0
 	}
 	return config.Width, config.Height
+}
+
+func extensionForTaskMime(mimeType string) string {
+	switch strings.ToLower(strings.Split(mimeType, ";")[0]) {
+	case "image/jpeg":
+		return ".jpg"
+	case "image/png":
+		return ".png"
+	case "image/webp":
+		return ".webp"
+	case "audio/wav", "audio/x-wav":
+		return ".wav"
+	case "audio/ogg":
+		return ".ogg"
+	case "audio/mp4", "audio/aac":
+		return ".m4a"
+	default:
+		if strings.HasPrefix(mimeType, "audio/") {
+			return ".mp3"
+		}
+		return ".bin"
+	}
 }
 
 func taskTime() string {
