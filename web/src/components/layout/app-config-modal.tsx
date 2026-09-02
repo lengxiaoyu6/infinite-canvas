@@ -251,6 +251,35 @@ export function AppConfigModal() {
         return uniqueModels(await fetchImageModels(configForLocalChannel(config, modelSelectChannel)));
     };
 
+    const refreshModels = async () => {
+        if (effectiveMode === "remote") return;
+        const channels = normalizeLocalChannels(config);
+        if (channels.some((channel) => !channel.baseUrl.trim() || !channel.apiKey.trim())) {
+            message.error("请先填写所有本地渠道的 Base URL 和 API Key");
+            return;
+        }
+        setLoadingModels(true);
+        try {
+            const results = await Promise.allSettled(
+                channels.map((channel) => fetchImageModels(configForLocalChannel(config, channel))),
+            );
+            updateLocalChannels(
+                channels.map((channel, index) => {
+                    const result = results[index];
+                    return result.status === "fulfilled" ? { ...channel, models: result.value } : channel;
+                }),
+            );
+            const failedCount = results.filter((result) => result.status === "rejected").length;
+            if (failedCount) {
+                message.warning(`${failedCount} 个渠道拉取失败，已保留原有模型，可在“选择”中手动增加模型`);
+            } else {
+                message.success("模型列表已更新");
+            }
+        } finally {
+            setLoadingModels(false);
+        }
+    };
+
 
     const measureStorage = async (provider: UserStorageProvider) => {
         if (!token) {
@@ -420,7 +449,7 @@ export function AppConfigModal() {
                             <div className="font-medium text-stone-900 dark:text-stone-100">云端渠道</div>
                             <div className="mt-1">由系统后台渠道转发请求，当前可用 {modelConfig.models.length} 个模型。</div>
                         </div>
-                    ) : null}
+                    )}
                     <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
                         {modelGroups.map((group) => (
                             <Form.Item key={group.modelKey} label={group.defaultLabel} className="mb-4">
