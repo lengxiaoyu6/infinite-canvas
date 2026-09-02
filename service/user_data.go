@@ -141,7 +141,7 @@ func SelectUserLocalModelChannelForModel(userID string, modelName string, channe
 			if apiKey == "" {
 				return model.ModelChannel{}, errors.New("个人密钥渠道未填写 API Key")
 			}
-			if len(models) > 0 && !userLocalChannelHasModel(models, modelName) {
+			if len(models) > 0 && !modelListHasModel(models, modelName) {
 				return model.ModelChannel{}, errors.New("个人密钥渠道不支持该模型")
 			}
 			systemChannel.APIKey = apiKey
@@ -150,7 +150,7 @@ func SelectUserLocalModelChannelForModel(userID string, modelName string, channe
 		if baseURL == "" || apiKey == "" {
 			return model.ModelChannel{}, errors.New("本地渠道配置不完整")
 		}
-		if len(models) > 0 && !userLocalChannelHasModel(models, modelName) {
+		if len(models) > 0 && !modelListHasModel(models, modelName) {
 			return model.ModelChannel{}, errors.New("本地渠道不支持该模型")
 		}
 		return model.ModelChannel{
