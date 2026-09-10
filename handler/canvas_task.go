@@ -271,7 +271,7 @@ func runCanvasImageTask(task model.CanvasImageTask, user model.AuthUser, body []
 		saveFailedCanvasImageTask(task, message, string(payload))
 		return
 	}
-	collectAll := isKIESeedreamLayerDecompositionModel(task.Model)
+	collectAll := allAIProtocolImageResults(task.Model)
 	imageURLs, mimeType, bytes, err := imageURLsFromAIResponse(payload, responseContentType, collectAll, task.Endpoint == "/chat/completions")
 	if err != nil {
 		saveFailedCanvasImageTask(task, err.Error(), string(payload))
@@ -337,6 +337,18 @@ func runCanvasAudioTask(task model.CanvasAudioTask, user model.AuthUser, body []
 		mimeType = strings.TrimSpace(http.DetectContentType(payload))
 	}
 	if strings.Contains(mimeType, "json") {
+		var result struct {
+			Provider string `json:"provider"`
+			AudioURL string `json:"audio_url"`
+			MimeType string `json:"mime_type"`
+		}
+		if service.AutoDLModelKind(task.Model) == "audio" && json.Unmarshal(payload, &result) == nil && result.Provider == service.ModelChannelProtocolAutoDL && result.AudioURL != "" {
+			task.Status, task.Progress, task.CompletedAt = "completed", 100, taskTime()
+			task.AudioURL, task.MimeType, task.ResponseBody = result.AudioURL, result.MimeType, string(payload)
+			task.Error, task.ErrorDetail = "", ""
+			_, _ = service.SaveCanvasAudioTask(task)
+			return
+		}
 		saveFailedCanvasAudioTask(task, "音频接口没有返回音频文件", string(payload))
 		return
 	}

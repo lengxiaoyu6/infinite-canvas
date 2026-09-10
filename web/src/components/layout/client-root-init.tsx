@@ -5,11 +5,14 @@ import { useEffect, useRef } from "react";
 import { usePathname } from "next/navigation";
 
 import { fetchUserConfig } from "@/services/api/user-config";
-import { defaultUserStorageProvider, defaultUserWebDAVStorageProvider, saveUserStorageProvider, saveUserWebDAVStorageProvider } from "@/services/image-storage";
-import { useConfigStore, useIsModelConfigReady, type AiConfig } from "@/stores/use-config-store";
+import { App } from "antd";
+
+import { STORAGE_SYNC_FAILED_EVENT, defaultUserStorageProvider, defaultUserWebDAVStorageProvider, saveUserStorageProvider, saveUserWebDAVStorageProvider } from "@/services/image-storage";
+import { useConfigStore, useIsModelConfigReady } from "@/stores/use-config-store";
 import { useUserStore } from "@/stores/use-user-store";
 
 export function ClientRootInit({ children }: { children: ReactNode }) {
+    const { message } = App.useApp();
     const pathname = usePathname();
     const token = useUserStore((state) => state.token);
     const user = useUserStore((state) => state.user);
@@ -25,6 +28,15 @@ export function ClientRootInit({ children }: { children: ReactNode }) {
     const isModelConfigReady = useIsModelConfigReady();
     const isLoginPage = pathname === "/login" || pathname === "/admin/login";
     const adminRemoteTokenRef = useRef("");
+
+    useEffect(() => {
+        const onSyncFailed = (event: Event) => {
+            const detail = (event as CustomEvent<string>).detail;
+            message.warning({ key: STORAGE_SYNC_FAILED_EVENT, content: `云端同步失败，已保留原始素材${detail ? `：${detail}` : ""}` });
+        };
+        window.addEventListener(STORAGE_SYNC_FAILED_EVENT, onSyncFailed);
+        return () => window.removeEventListener(STORAGE_SYNC_FAILED_EVENT, onSyncFailed);
+    }, [message]);
 
     useEffect(() => {
         void loadPublicSettings();
@@ -57,14 +69,10 @@ export function ClientRootInit({ children }: { children: ReactNode }) {
         let canceled = false;
         void fetchUserConfig(token)
             .then((payload) => {
+                if (canceled) return;
                 const syncS3 = payload.modelConfig?.syncStorageConfig === true;
                 const syncWebDAV = payload.modelConfig?.syncWebDAVStorageConfig === true;
-                if (payload.modelConfig) {
-                    Object.entries(payload.modelConfig)
-                        .forEach(([key, value]) => updateConfig(key as keyof AiConfig, value as never));
-                }
-                updateConfig("syncStorageConfig", syncS3);
-                updateConfig("syncWebDAVStorageConfig", syncWebDAV);
+                applyUserModelConfig(userId, loadVersion, payload.modelConfig);
                 if (syncS3 && payload.storageProvider?.s3) {
                     saveUserStorageProvider({
                         ...defaultUserStorageProvider(),

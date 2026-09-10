@@ -120,6 +120,10 @@ export function CanvasPromptChipInput({ value, references, onChange, onReference
         const editor = editorRef.current;
         if (!editor) return;
         if (isEmptyEditorPlaceholder(editor)) editor.replaceChildren();
+        const skillKeys = new Set(Array.from(editor.querySelectorAll<HTMLElement>("[data-skill-id]")).map((chip) => `${chip.dataset.skillSource}:${chip.dataset.skillId}`));
+        skills?.forEach((skill) => {
+            if (!skillKeys.has(`${skill.source}:${skill.id}`)) onSkillRemove?.(skill.id, skill.source);
+        });
         emitChange(serializePromptEditor(editor));
         syncMention();
     };
@@ -172,8 +176,13 @@ export function CanvasPromptChipInput({ value, references, onChange, onReference
                 style={{ ...style, cursor: "text" }}
                 onFocus={commitPendingReferences}
                 onPointerDown={commitPendingReferences}
-                onInput={() => {
-                    if (!composingRef.current) syncFromEditor();
+                onInput={(event) => {
+                    if (composingRef.current) return;
+                    const selection = window.getSelection();
+                    const node = selection?.anchorNode;
+                    // 浏览器在末行光标前保留的独立换行节点只是占位。
+                    if (selection?.isCollapsed && selection.anchorOffset === 0 && node instanceof Text && node.data === "\n" && node === event.currentTarget.lastChild) node.data = "\uFEFF";
+                    syncFromEditor();
                 }}
                 onPaste={(event) => {
                     const image = Array.from(event.clipboardData.files).find((file) => file.type.startsWith("image/"));
@@ -246,7 +255,6 @@ export function CanvasPromptChipInput({ value, references, onChange, onReference
                     const deletedChip = (event.key === "Backspace" || event.key === "Delete") ? deleteAdjacentChip(event.key) : null;
                     if (deletedChip) {
                         event.preventDefault();
-                        if (deletedChip.type === "skill") onSkillRemove?.(deletedChip.id, deletedChip.source);
                         requestAnimationFrame(syncFromEditor);
                         return;
                     }
@@ -459,7 +467,18 @@ function appendReferenceChip(
 ) {
     const chip = createReferenceChip(reference, theme, onImagePreview);
     if (pending) chip.dataset.pendingReference = "true";
-    editor.append(document.createTextNode(" "), chip, document.createTextNode(" "));
+    let line = editor;
+    while (true) {
+        let last = line.lastChild;
+        while (last?.nodeType === Node.TEXT_NODE && !last.textContent) last = last.previousSibling;
+        if (last instanceof HTMLElement && (last.tagName === "DIV" || last.tagName === "P")) {
+            line = last;
+            continue;
+        }
+        if (last instanceof HTMLBRElement) last.remove();
+        break;
+    }
+    line.append(document.createTextNode(" "), chip, document.createTextNode(" "));
     editor.scrollTop = editor.scrollHeight;
 }
 
@@ -491,31 +510,41 @@ function isEmptyEditorPlaceholder(editor: HTMLElement) {
         && (!child.firstChild || child.firstChild instanceof HTMLBRElement);
 }
 
-function serializePromptNodes(nodes: NodeListOf<ChildNode>) {
-    let result = "";
+function serializePromptNodes(nodes: NodeListOf<ChildNode>, state = { text: "", emptyLine: true, pendingBr: false }, group = { hasContent: false, afterBlock: false }) {
+    // BR 延后到下一段行内内容再输出，块边界负责换行并丢弃行末占位 BR。
     nodes.forEach((node) => {
-        if (node.nodeType === Node.TEXT_NODE) {
-            result += node.textContent || "";
+        const element = node instanceof HTMLElement ? node : null;
+        const text = node.nodeType === Node.TEXT_NODE ? node.textContent || "" : element?.dataset.refLabel;
+        const block = element?.tagName === "DIV" || element?.tagName === "P";
+        const br = element?.tagName === "BR";
+        if (!text && !block && !br && !element?.dataset.skillId) {
+            if (element) serializePromptNodes(element.childNodes, state, group);
             return;
         }
-        if (!(node instanceof HTMLElement)) return;
-        const referenceLabel = node.dataset.refLabel;
-        if (referenceLabel) {
-            result += referenceLabel;
-            return;
+        if (block || group.afterBlock) {
+            if (group.hasContent && (state.emptyLine || !state.text.endsWith("\n"))) state.text += "\n";
+            state.pendingBr = false;
+            state.emptyLine = true;
+            group.afterBlock = false;
         }
-        if (node.dataset.skillId) return;
-        if (node.tagName === "BR") {
-            result += "\n";
-            return;
+        if (block) {
+            serializePromptNodes(element!.childNodes, state);
+            state.pendingBr = false;
+            group.afterBlock = true;
+        } else {
+            if (state.pendingBr) {
+                state.text += "\n";
+                state.emptyLine = true;
+            }
+            state.pendingBr = br;
+            if (text) {
+                state.text += text;
+                state.emptyLine = false;
+            }
         }
-        const content = serializePromptNodes(node.childNodes);
-        const isBlock = node.tagName === "DIV" || node.tagName === "P";
-        if (isBlock && result && !result.endsWith("\n")) result += "\n";
-        result += content;
-        if (isBlock && !content) result += "\n";
+        group.hasContent = true;
     });
-    return result;
+    return state.text;
 }
 
 function removeActiveMention() {
@@ -529,15 +558,12 @@ function removeActiveMention() {
     range.deleteContents();
 }
 
-function deleteAdjacentChip(key: string): { type: "reference" } | { type: "skill"; id: string; source: CanvasAgentSkillSelection["source"] } | null {
+function deleteAdjacentChip(key: string) {
     const selection = window.getSelection();
-    if (!selection?.rangeCount || !selection.isCollapsed) return null;
+    if (!selection?.rangeCount || !selection.isCollapsed) return false;
     const range = selection.getRangeAt(0);
     const target = adjacentReferenceNode(range, key);
-    if (!target) return null;
-    const deleted = target.dataset.skillId
-        ? { type: "skill" as const, id: target.dataset.skillId, source: target.dataset.skillSource as CanvasAgentSkillSelection["source"] }
-        : { type: "reference" as const };
+    if (!target) return false;
     target.parentNode?.normalize();
     const previousSibling = target.previousSibling;
     const nextSibling = target.nextSibling;
@@ -549,7 +575,7 @@ function deleteAdjacentChip(key: string): { type: "reference" } | { type: "skill
     range.collapse(true);
     selection.removeAllRanges();
     selection.addRange(range);
-    return deleted;
+    return true;
 }
 
 function adjacentReferenceNode(range: Range, key: string) {

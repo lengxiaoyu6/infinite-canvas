@@ -71,6 +71,7 @@ export type CanvasNodeMetadata = {
     mimoVoiceDesignPrompt?: string;
     geminiTtsVoice?: string;
     mimoVoiceCloneAudioNodeId?: string;
+    referenceAudioNodeId?: string;
     references?: string[];
     naturalWidth?: number;
     naturalHeight?: number;
@@ -171,6 +172,7 @@ export type PendingAgentAsset = {
 export type CanvasPendingAgentRequest = {
     prompt: string;
     assets: PendingAgentAsset[];
+    skills: CanvasAgentSkillSelection[];
 };
 
 export type CanvasAssistantImage = {
@@ -202,7 +204,11 @@ export type CanvasAgentPhase =
     | "complete";
 
 export type CanvasAgentConfig = {
+    mode?: "api" | "codex";
+    codexModel?: string;
+    codexEffort?: string;
     textApiMode: "chat" | "responses";
+    textReasoningEnabled?: boolean;
     autoGenerateMedia: boolean;
     imageQuality: string;
     imageSize: string;
@@ -232,6 +238,7 @@ export type CanvasAgentToolCall = {
     id: string;
     name: string;
     arguments: Record<string, unknown>;
+    argumentsError?: string;
 };
 
 export type CanvasAgentProtocolMessage =
@@ -253,12 +260,20 @@ export type CanvasAssistantMessage = {
     skillsSelected?: boolean;
 };
 
+export type CanvasAgentJsonFallbackMode = "structured-json" | "prompt-json";
+export type CanvasAgentToolMode = "native" | CanvasAgentJsonFallbackMode;
+
 export type CanvasAssistantSession = {
+    provider?: "api" | "codex";
+    codexThreadId?: string;
+    codexServiceId?: string;
     id: string;
     title: string;
     messages: CanvasAssistantMessage[];
     agentState: CanvasAgentState;
     protocolMessages: CanvasAgentProtocolMessage[];
+    jsonToolFallbackKey?: string;
+    jsonToolFallbackMode?: CanvasAgentJsonFallbackMode;
     activeSkills?: CanvasAgentSkillSelection[];
     contextCheckpoint?: string;
     createdAt: string;

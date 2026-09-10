@@ -13,13 +13,14 @@ import { createCanvasAudioTask, pollCanvasAudioTaskStatus, type CanvasAudioTask 
 import { createVideoGenerationTask, pollVideoGenerationTaskStatus, VIDEO_POLL_INTERVAL_MS, type VideoResponse } from "@/services/api/video";
 import { channelProtocolForConfig, defaultConfig, resolveModelForCapability, type AiConfig, useConfigStore, useEffectiveConfig } from "@/stores/use-config-store";
 import { collectImageStorageKeys, deleteStoredImages, resolveImageUrl, uploadImage, uploadRemoteImageToServer, type UploadedImage } from "@/services/image-storage";
-import { resolveMediaUrl, uploadMediaFile, uploadRemoteMediaToServer, type UploadedFile } from "@/services/file-storage";
+import { downloadRemoteMedia, resolveMediaUrl, uploadMediaFile, uploadRemoteMediaToServer, type UploadedFile } from "@/services/file-storage";
 import { nanoid } from "nanoid";
 import { getDataUrlByteSize, readImageMeta } from "@/lib/image-utils";
 import { canvasThemes, type CanvasBackgroundMode } from "@/lib/canvas-theme";
 import { UserStatusActions } from "@/components/layout/user-status-actions";
 import { isKIEKlingV3Config, kieKlingOmniVariant } from "@/components/video-settings-panel";
 import { useAssetStore } from "@/stores/use-asset-store";
+import { useUserStore } from "@/stores/use-user-store";
 import { useThemeStore } from "@/stores/use-theme-store";
 import { cropDataUrl, splitDataUrl, upscaleDataUrl } from "../utils/canvas-image-data";
 import { fitNodeSize, nodeSizeFromRatio } from "../utils/canvas-node-size";
@@ -27,9 +28,10 @@ import { captureVideoFrame, type VideoFramePosition } from "../utils/canvas-vide
 import { PANORAMA_IMAGE_SIZE, PANORAMA_NODE_SIZE, buildPanoramaPrompt, isCanvasImageNodeType, isPanoramaNodeType } from "../utils/canvas-panorama";
 import { applyCameraPrompt } from "../utils/canvas-camera";
 import { GROUP_PADDING, findContainingGroupId, findGroupDropTarget, getNodeBounds, snapNodesIntoGroup } from "../utils/canvas-group";
-import { App, Button, Dropdown, Modal } from "antd";
+import { App, Button, Dropdown, Modal, Slider } from "antd";
 import { isCogVideoX3Model, modelKey, supportsVideoAudioGeneration, supportsVideoFrameReferences } from "@/lib/video-model-capabilities";
 import { isMimoVoiceCloneModel } from "@/lib/mimo-tts";
+import { isAutoDLConfig } from "@/lib/autodl";
 import { isGlmTtsModel } from "@/lib/audio-generation";
 import { isGrok2APITtsConfig } from "@/lib/grok-tts";
 import { isGeminiConfig, isGeminiTtsModel } from "@/lib/gemini";
@@ -312,6 +314,7 @@ function InfiniteCanvasPage({ projectId }: { projectId: string }) {
     const lastHistoryRef = useRef<CanvasHistoryEntry | null>(null);
     const historyCommitTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     const historyCleanupTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+    const historyCleanupKeysRef = useRef(new Map<string, string>());
     const viewportSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     const sidePanelSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     const focusAnimationRef = useRef<number | null>(null);
@@ -358,7 +361,7 @@ function InfiniteCanvasPage({ projectId }: { projectId: string }) {
     const [chatSessions, setChatSessions] = useState<CanvasAssistantSession[]>([]);
     const [activeChatId, setActiveChatId] = useState<string | null>(null);
     const [agentConfig, setAgentConfig] = useState<CanvasAgentConfig | null>(null);
-    const [initialAgentRequest, setInitialAgentRequest] = useState<{ prompt: CanvasPendingAgentRequest["prompt"]; references: CanvasAssistantReference[] } | null>(null);
+    const [initialAgentRequest, setInitialAgentRequest] = useState<{ prompt: CanvasPendingAgentRequest["prompt"]; references: CanvasAssistantReference[]; skills: CanvasPendingAgentRequest["skills"] } | null>(null);
     const [viewport, setViewport] = useState<ViewportTransform>({ x: 0, y: 0, k: 1 });
     const [canvasTool, setCanvasTool] = useState<"select" | "pan">("select");
     const [size, setSize] = useState({ width: 1200, height: 720 });
@@ -389,6 +392,13 @@ function InfiniteCanvasPage({ projectId }: { projectId: string }) {
     const [openDirectorNodeId, setOpenDirectorNodeId] = useState<string | null>(null);
     const [infoNodeId, setInfoNodeId] = useState<string | null>(null);
     const [cropNodeId, setCropNodeId] = useState<string | null>(null);
+    const [audioTrimNodeId, setAudioTrimNodeId] = useState<string | null>(null);
+    const [audioTrimStart, setAudioTrimStart] = useState(0);
+    const [audioTrimEnd, setAudioTrimEnd] = useState(0);
+    const [audioTrimDuration, setAudioTrimDuration] = useState(0);
+    const [audioTrimPlaying, setAudioTrimPlaying] = useState(false);
+    const [trimmingAudio, setTrimmingAudio] = useState(false);
+    const audioTrimRef = useRef<HTMLAudioElement | null>(null);
     const [maskEditNodeId, setMaskEditNodeId] = useState<string | null>(null);
     const [maskEditModel, setMaskEditModel] = useState("");
     const [maskEditChannelId, setMaskEditChannelId] = useState("");
@@ -409,15 +419,17 @@ function InfiniteCanvasPage({ projectId }: { projectId: string }) {
     const [referencePickerNodeId, setReferencePickerNodeId] = useState<string | null>(null);
     const [canvasNow, setCanvasNow] = useState(Date.now());
     const resolvedAgentConfig = useMemo<CanvasAgentConfig>(
-        () =>
-            agentConfig ? agentConfig : {
+        () => {
+            const defaults = { textApiMode: "chat" as const, autoGenerateMedia: false };
+            return agentConfig ? { ...defaults, ...agentConfig } : {
                 textApiMode: "chat",
                 autoGenerateMedia: false,
                 imageQuality: effectiveConfig.quality,
                 imageSize: effectiveConfig.size,
                 videoQuality: effectiveConfig.vquality,
                 videoSize: effectiveConfig.videoSize,
-            },
+            };
+        },
         [agentConfig, effectiveConfig.quality, effectiveConfig.size, effectiveConfig.videoSize, effectiveConfig.vquality],
     );
     const agentEffectiveConfig = useMemo(
@@ -450,8 +462,8 @@ function InfiniteCanvasPage({ projectId }: { projectId: string }) {
     );
 
     const cleanupCanvasFiles = useCallback(
-        (extra?: unknown) => {
-            cleanupAssetImages({ extra, history: historyRef.current, lastHistory: lastHistoryRef.current });
+        (extra?: unknown, storageKeys?: ReadonlyMap<string, string>) => {
+            cleanupAssetImages({ extra, history: historyRef.current, lastHistory: lastHistoryRef.current }, storageKeys);
         },
         [cleanupAssetImages],
     );
@@ -488,11 +500,16 @@ function InfiniteCanvasPage({ projectId }: { projectId: string }) {
     }, [previewNodeId, getBatchGroupNodes]);
 
     useEffect(() => () => {
+        const storageKeys = historyCleanupKeysRef.current;
+        collectImageStorageKeys([historyRef.current, lastHistoryRef.current], new Set(), undefined, storageKeys).forEach((key) => storageKeys.set(key, key));
+        historyCleanupKeysRef.current = new Map<string, string>();
         if (historyCleanupTimerRef.current) {
             clearTimeout(historyCleanupTimerRef.current);
             historyCleanupTimerRef.current = null;
         }
-    }, [projectId]);
+        const usedKeys = collectImageStorageKeys(nodesRef.current, new Set(), storageKeys);
+        if (Array.from(storageKeys.values()).some((key) => !usedKeys.has(key))) cleanupAssetImages({ nodes: nodesRef.current }, storageKeys, useUserStore.getState().token);
+    }, [cleanupAssetImages, projectId]);
 
     useEffect(() => {
         if (!hydrated) return;
@@ -539,6 +556,19 @@ function InfiniteCanvasPage({ projectId }: { projectId: string }) {
     }, [hydrated, openProject, projectId, router]);
 
     useEffect(() => {
+        if (!projectLoaded) return;
+        const openFromLink = () => {
+            const params = new URLSearchParams(window.location.hash.slice(1));
+            if (!params.has("agentUrl") && !params.has("agentToken")) return;
+            setAssistantMounted(true);
+            setAgentPanel((current) => ({ ...current, open: true }));
+        };
+        openFromLink();
+        window.addEventListener("hashchange", openFromLink);
+        return () => window.removeEventListener("hashchange", openFromLink);
+    }, [projectLoaded, projectId]);
+
+    useEffect(() => {
         if (!projectLoaded || applyingHistoryRef.current || historyPausedRef.current) return;
         const next = createHistoryEntry();
         const previous = lastHistoryRef.current;
@@ -549,8 +579,9 @@ function InfiniteCanvasPage({ projectId }: { projectId: string }) {
             const current = createHistoryEntry();
             const last = lastHistoryRef.current;
             if (!last) return;
-            const historyDropped = historyRef.current.past.length >= 50;
-            historyRef.current.past = [...historyRef.current.past.slice(-49), last];
+            const historyDropped = historyRef.current.past.length >= 10 || historyRef.current.future.length > 0;
+            if (historyDropped) collectImageStorageKeys([historyRef.current.past.slice(0, -9), historyRef.current.future], new Set(), undefined, historyCleanupKeysRef.current).forEach((key) => historyCleanupKeysRef.current.set(key, key));
+            historyRef.current.past = [...historyRef.current.past.slice(-9), last];
             historyRef.current.future = [];
             setHistoryState({ canUndo: true, canRedo: false });
             lastHistoryRef.current = current;
@@ -559,7 +590,9 @@ function InfiniteCanvasPage({ projectId }: { projectId: string }) {
                 if (historyCleanupTimerRef.current) clearTimeout(historyCleanupTimerRef.current);
                 historyCleanupTimerRef.current = setTimeout(() => {
                     historyCleanupTimerRef.current = null;
-                    cleanupCanvasFiles();
+                    const storageKeys = historyCleanupKeysRef.current;
+                    historyCleanupKeysRef.current = new Map<string, string>();
+                    cleanupCanvasFiles(undefined, storageKeys);
                 }, 2000);
             }
         }, 180);
@@ -831,6 +864,60 @@ function InfiniteCanvasPage({ projectId }: { projectId: string }) {
     const toolbarNode = toolbarNodeId ? nodeById.get(toolbarNodeId) || null : null;
     const infoNode = infoNodeId ? nodeById.get(infoNodeId) || null : null;
     const cropNode = cropNodeId ? nodeById.get(cropNodeId) || null : null;
+    const audioTrimNode = audioTrimNodeId ? nodeById.get(audioTrimNodeId) || null : null;
+    const audioTrimTooShort = Math.round((audioTrimEnd - audioTrimStart) * 100) < 50;
+
+    useEffect(() => {
+        setAudioTrimPlaying(false);
+        const src = audioTrimNode?.metadata?.content;
+        if (!src) return;
+
+        const audio = new Audio(src);
+        audioTrimRef.current = audio;
+        audio.preload = "metadata";
+        setAudioTrimStart(0);
+        setAudioTrimEnd(0);
+        setAudioTrimDuration(0);
+
+        audio.onloadedmetadata = () => {
+            const duration = Number.isFinite(audio.duration)
+                ? Math.floor(audio.duration * 100) / 100
+                : 0;
+            setAudioTrimDuration(duration);
+            setAudioTrimEnd(duration);
+        };
+        audio.onplay = () => setAudioTrimPlaying(true);
+        audio.onpause = () => setAudioTrimPlaying(false);
+        audio.onended = () => setAudioTrimPlaying(false);
+        audio.onerror = () => message.error("音频加载失败");
+
+        return () => {
+            audio.pause();
+            audio.removeAttribute("src");
+            audio.load();
+            audioTrimRef.current = null;
+        };
+    }, [audioTrimNode?.id, audioTrimNode?.metadata?.content, message]);
+
+    useEffect(() => {
+        if (!audioTrimPlaying) return;
+
+        let frame = 0;
+        const checkEnd = () => {
+            const audio = audioTrimRef.current;
+            if (!audio || audio.paused) return;
+
+            if (audio.currentTime >= audioTrimEnd) {
+                audio.pause();
+            } else {
+                frame = requestAnimationFrame(checkEnd);
+            }
+        };
+
+        frame = requestAnimationFrame(checkEnd);
+        return () => cancelAnimationFrame(frame);
+    }, [audioTrimPlaying, audioTrimEnd]);
+
     const maskEditNode = maskEditNodeId ? nodeById.get(maskEditNodeId) || null : null;
     const maskEditConfig = maskEditNode ? buildGenerationConfig(effectiveConfig, maskEditNode, "image") : null;
     const currentMaskEditModel = maskEditModel || maskEditConfig?.model || "";
@@ -1048,6 +1135,9 @@ function InfiniteCanvasPage({ projectId }: { projectId: string }) {
                         batchChildIds: childIds,
                         primaryImageId,
                         content: primaryNode?.metadata?.content || nextNode.metadata.content,
+                        storageKey: primaryNode?.metadata?.content ? primaryNode.metadata.storageKey : nextNode.metadata.storageKey,
+                        bytes: primaryNode?.metadata?.content ? primaryNode.metadata.bytes : nextNode.metadata.bytes,
+                        mimeType: primaryNode?.metadata?.content ? primaryNode.metadata.mimeType : nextNode.metadata.mimeType,
                         naturalWidth: primaryNode?.metadata?.naturalWidth || nextNode.metadata.naturalWidth,
                         naturalHeight: primaryNode?.metadata?.naturalHeight || nextNode.metadata.naturalHeight,
                         panoramaProjection: primaryNode?.metadata?.panoramaProjection || nextNode.metadata.panoramaProjection,
@@ -1651,6 +1741,7 @@ function InfiniteCanvasPage({ projectId }: { projectId: string }) {
             ]);
             setSelectedNodeIds(new Set([id]));
             setSelectedConnectionId(null);
+            return id;
         } catch (error) {
             console.error("Upload audio node failed:", error);
             message.error("音频上传失败");
@@ -1658,6 +1749,66 @@ function InfiniteCanvasPage({ projectId }: { projectId: string }) {
             hideLoading();
         }
     }, [message]);
+
+    const extractingAudioRef = useRef(new Set<string>());
+
+    const extractAudio = useCallback(async (node: CanvasNodeData, trim?: { start: number; end: number }) => {
+        if ((node.type !== CanvasNodeType.Video && node.type !== CanvasNodeType.Audio) || !node.metadata?.content || extractingAudioRef.current.has(node.id)) return;
+        extractingAudioRef.current.add(node.id);
+        if (trim) setTrimmingAudio(true);
+        const hideLoading = message.loading(trim ? "正在截取音频..." : "正在分离音频...", 0);
+        let input: import("mediabunny").Input | undefined;
+        let conversion: import("mediabunny").Conversion | undefined;
+
+        try {
+            if (trim && (!Number.isFinite(trim.start) || !Number.isFinite(trim.end) || trim.start < 0 || Math.round((trim.end - trim.start) * 100) < 50)) {
+                throw new Error("请填写有效的起止时间，至少保留 0.5 秒");
+            }
+            const [{ Input, ALL_FORMATS, BlobSource, Output, WavOutputFormat, BufferTarget, Conversion }, blob] = await Promise.all([
+                import("mediabunny"),
+                resolveMediaUrl(node.metadata.storageKey, node.metadata.content).then(downloadRemoteMedia),
+            ]);
+            input = new Input({ source: new BlobSource(blob), formats: ALL_FORMATS });
+            const audioTrack = await input.getPrimaryAudioTrack();
+            if (!audioTrack) throw new Error("该文件没有音轨");
+            if (trim && trim.end > await audioTrack.computeDuration()) throw new Error("结束时间不能超过音频时长");
+
+            const target = new BufferTarget();
+            const output = new Output({ format: new WavOutputFormat(), target });
+            conversion = await Conversion.init({
+                input, output, tracks: "primary", trim,
+                audio: { process: (sample) => { if (sample.timestamp < 0 && sample.timestamp > -1e-9) sample.setTimestamp(0); return sample; } },
+            });
+            if (!conversion.isValid) throw new Error("当前浏览器无法解码该文件的音频");
+            await conversion.execute();
+
+            const file = new File([target.buffer!], `${node.title || (trim ? "音频" : "视频")} ${trim ? "截取" : "音频"}.wav`, {
+                type: "audio/wav",
+            });
+            const width = NODE_DEFAULT_SIZE[CanvasNodeType.Audio].width;
+            hideLoading();
+            const audioNodeId = await createAudioFileNode(file, {
+                x: node.position.x + node.width + 96 + width / 2,
+                y: node.position.y + node.height / 2,
+            });
+
+            if (audioNodeId) {
+                setConnections((prev) => [
+                    ...prev,
+                    { id: nanoid(), fromNodeId: node.id, toNodeId: audioNodeId },
+                ]);
+            }
+            return audioNodeId;
+        } catch (error) {
+            message.error(error instanceof Error ? error.message : "音频处理失败");
+        } finally {
+            await conversion?.cancel().catch(console.error);
+            input?.dispose();
+            extractingAudioRef.current.delete(node.id);
+            hideLoading();
+            if (trim) setTrimmingAudio(false);
+        }
+    }, [createAudioFileNode, message]);
 
     const createTextNodeFromClipboard = useCallback(
         (text: string) => {
@@ -1859,6 +2010,9 @@ function InfiniteCanvasPage({ projectId }: { projectId: string }) {
                         metadata: {
                             ...node.metadata,
                             content: child.metadata?.content,
+                            storageKey: child.metadata?.storageKey,
+                            bytes: child.metadata?.bytes,
+                            mimeType: child.metadata?.mimeType,
                             primaryImageId: child.id,
                             naturalWidth: child.metadata?.naturalWidth,
                             naturalHeight: child.metadata?.naturalHeight,
@@ -2975,7 +3129,7 @@ function InfiniteCanvasPage({ projectId }: { projectId: string }) {
                     const frameReferencesEnabled = supportsVideoFrameReferences(videoGenerationConfig.model, channelProtocolForConfig(videoGenerationConfig));
                     const firstFrame = frameReferencesEnabled ? generationContext.firstFrame : null;
                     const lastFrame = frameReferencesEnabled ? generationContext.lastFrame : null;
-                    const videoReferenceImages = frameReferencesEnabled ? generationContext.referenceImages : [...generationContext.referenceImages, ...[generationContext.firstFrame, generationContext.lastFrame].filter((image): image is ReferenceImage => Boolean(image))];
+                    const videoReferenceImages = frameReferencesEnabled || isAutoDLConfig(videoGenerationConfig) ? generationContext.referenceImages : [...generationContext.referenceImages, ...[generationContext.firstFrame, generationContext.lastFrame].filter((image): image is ReferenceImage => Boolean(image))];
                     const spec = nodeSizeFromRatio(videoGenerationConfig.size, NODE_DEFAULT_SIZE[CanvasNodeType.Video].width, NODE_DEFAULT_SIZE[CanvasNodeType.Video].height) || NODE_DEFAULT_SIZE[CanvasNodeType.Video];
                     const isEmptyVideoNode = sourceNode?.type === CanvasNodeType.Video && !sourceNode.metadata?.content;
                     const videoId = isEmptyVideoNode ? nodeId : nanoid();
@@ -2999,7 +3153,7 @@ function InfiniteCanvasPage({ projectId }: { projectId: string }) {
                 }
 
                 if (mode === "audio") {
-                    const referenceAudio = selectMiMoVoiceCloneReference(generationConfig, sourceNode?.metadata, generationContext.referenceAudios);
+                    const referenceAudio = selectAudioReference(generationConfig, sourceNode?.metadata, generationContext.referenceAudios);
                     const spec = NODE_DEFAULT_SIZE[CanvasNodeType.Audio];
                     const isEmptyAudioNode = sourceNode?.type === CanvasNodeType.Audio && !sourceNode.metadata?.content;
                     const audioId = isEmptyAudioNode ? nodeId : nanoid();
@@ -3244,7 +3398,7 @@ function InfiniteCanvasPage({ projectId }: { projectId: string }) {
                         imageCount: 1,
                         videoSeconds: agentEffectiveConfig.videoSeconds,
                         videoGenerateAudio: agentEffectiveConfig.videoGenerateAudio,
-                        videoSupportsAudio: supportsVideoAudioGeneration(videoModel),
+                        videoSupportsAudio: supportsVideoAudioGeneration(videoModel, channelProtocolForConfig({ ...agentEffectiveConfig, model: videoModel, videoModel })),
                         videoDuration: canvasAgentVideoDurationHint(videoModel),
                         audioVoice: isGeminiTtsModel(audioModel) && isGeminiConfig({ ...agentEffectiveConfig, model: audioModel }, audioModel) ? agentEffectiveConfig.geminiTtsVoice : isGlmTtsModel(audioModel) ? agentEffectiveConfig.glmTtsVoice : grokTts ? agentEffectiveConfig.grokTtsVoice : agentEffectiveConfig.audioVoice,
                         audioLanguage: grokTts ? agentEffectiveConfig.grokTtsLanguage : "",
@@ -3466,7 +3620,7 @@ function InfiniteCanvasPage({ projectId }: { projectId: string }) {
                         const durationError = validateCanvasAgentVideoSeconds(generationConfig.model, seconds);
                         if (durationError) return { ok: false, code: "unsupported_duration", message: durationError, supported: canvasAgentVideoDurationHint(generationConfig.model) };
                         const generateAudio = typeof args.generateAudio === "boolean" ? args.generateAudio : generationConfig.videoGenerateAudio === "true";
-                        if (generateAudio && !supportsVideoAudioGeneration(generationConfig.model)) {
+                        if (generateAudio && !supportsVideoAudioGeneration(generationConfig.model, channelProtocolForConfig(generationConfig))) {
                             return { ok: false, code: "video_audio_not_supported", message: "当前全局视频模型不支持视频原生声音" };
                         }
                         metadata.seconds = String(seconds);
@@ -3575,7 +3729,7 @@ function InfiniteCanvasPage({ projectId }: { projectId: string }) {
             const context = hasSavedImageMetadata ? null : await hydrateNodeGenerationContext(buildNodeGenerationContext(sourceNode.id, nodesRef.current, connectionsRef.current, sourceNode.metadata?.prompt || node.metadata?.prompt || ""));
             const prompt = (isPanorama ? savedImageMetadata?.panoramaFinalPrompt || "" : savedImageMetadata?.prompt || context?.prompt || "").trim();
             const requestPrompt = isPanorama ? prompt : applyCameraPrompt(prompt, savedImageMetadata?.cameraControl || node.metadata?.cameraControl);
-            if (!prompt) {
+            if (!prompt && !(node.type === CanvasNodeType.Video && isAutoDLConfig(generationConfig))) {
                 message.warning("找不到提示词，无法重试");
                 return;
             }
@@ -3613,13 +3767,13 @@ function InfiniteCanvasPage({ projectId }: { projectId: string }) {
                     const frameReferencesEnabled = supportsVideoFrameReferences(videoGenerationConfig.model, channelProtocolForConfig(videoGenerationConfig));
                     const firstFrame = frameReferencesEnabled ? context?.firstFrame || null : null;
                     const lastFrame = frameReferencesEnabled ? context?.lastFrame || null : null;
-                    const references = frameReferencesEnabled ? retryImages : [...retryImages, ...[context?.firstFrame, context?.lastFrame].filter((image): image is ReferenceImage => Boolean(image))];
+                    const references = frameReferencesEnabled || isAutoDLConfig(videoGenerationConfig) ? retryImages : [...retryImages, ...[context?.firstFrame, context?.lastFrame].filter((image): image is ReferenceImage => Boolean(image))];
                     const created = await createVideoGenerationTask(videoGenerationConfig, requestPrompt, { references, firstFrame, lastFrame, videoReferences: context?.referenceVideos || [], audioReferences: context?.referenceAudios || [] }, undefined, { clientTaskId: retryVideoTaskId, source: "canvas", sourceId: node.id });
                     setNodes((prev) => applyCanvasVideoTaskUpdate(prev, node.id, created.task, videoGenerationConfig, retryStartedAt, { width: node.width, height: node.height }));
                     return;
                 }
                 if (node.type === CanvasNodeType.Audio) {
-                    const referenceAudio = selectMiMoVoiceCloneReference(generationConfig, sourceNode?.metadata, context?.referenceAudios || []);
+                    const referenceAudio = selectAudioReference(generationConfig, sourceNode?.metadata, context?.referenceAudios || []);
                     const task = await createCanvasAudioTask(generationConfig, prompt, { nodeId: node.id, sourceId: projectId, clientTaskId: retryAudioTaskId }, referenceAudio);
                     setNodes((prev) => applyCanvasAudioTaskUpdate(prev.map((item) => (item.id === node.id ? { ...item, metadata: { ...item.metadata, prompt, ...buildAudioGenerationMetadata(generationConfig, sourceNode?.metadata) } } : item)), node.id, task, retryStartedAt));
                     return;
@@ -3758,7 +3912,7 @@ function InfiniteCanvasPage({ projectId }: { projectId: string }) {
                 );
             }
             updateProject(projectId, { pendingAgentRequest: undefined });
-            setInitialAgentRequest({ prompt: request.prompt, references });
+            setInitialAgentRequest({ prompt: request.prompt, references, skills: request.skills });
         })().catch((error) => {
             consumedAgentRequestProjectRef.current = null;
             message.error(error instanceof Error ? error.message : "首页素材插入失败");
@@ -4082,6 +4236,8 @@ function InfiniteCanvasPage({ projectId }: { projectId: string }) {
                     onToggleDialog={(node) => setDialogNodeId((current) => (current === node.id ? null : node.id))}
                     onGenerateImage={generateImageFromTextNode}
                     onUpload={(node) => handleUploadRequest(node.id)}
+                    onExtractAudio={(node) => void extractAudio(node)}
+                    onTrimAudio={(node) => setAudioTrimNodeId(node.id)}
                     onDownload={downloadNodeImage}
                     onSaveAsset={(node) => void saveNodeAsset(node)}
                     onUploadMediaToCloud={(node) => void uploadNodeMediaToCloud(node)}
@@ -4199,6 +4355,86 @@ function InfiniteCanvasPage({ projectId }: { projectId: string }) {
 
                 <CanvasNodeInfoModal node={infoNode} open={Boolean(infoNode)} onClose={() => setInfoNodeId(null)} />
 
+                <Modal
+                    title="截取音频"
+                    open={Boolean(audioTrimNode)}
+                    centered
+                    width={360}
+                    confirmLoading={trimmingAudio}
+                    closable={!trimmingAudio}
+                    okText="确认截取"
+                    cancelText="取消"
+                    okButtonProps={{ disabled: audioTrimTooShort }}
+                    cancelButtonProps={{ disabled: trimmingAudio }}
+                    onCancel={() => {
+                        if (!trimmingAudio) setAudioTrimNodeId(null);
+                    }}
+                    onOk={async () => {
+                        if (!audioTrimNode || audioTrimTooShort) return;
+
+                        audioTrimRef.current?.pause();
+                        const id = await extractAudio(audioTrimNode, {
+                            start: audioTrimStart,
+                            end: audioTrimEnd,
+                        });
+                        if (id) setAudioTrimNodeId(null);
+                    }}
+                    modalRender={(content) => <div className="select-none" data-canvas-no-zoom>{content}</div>}
+                >
+                    <div className="space-y-4 py-2">
+                        <Slider
+                            {...{ allowCross: false, pushable: 0.5 }}
+                            range={{ draggableTrack: true }}
+                            min={0}
+                            max={audioTrimDuration || 1}
+                            step={0.01}
+                            value={[audioTrimStart, audioTrimEnd]}
+                            disabled={trimmingAudio || audioTrimDuration < 0.5}
+                            ariaLabelForHandle={["截取开始时间", "截取结束时间"]}
+                            tooltip={{ formatter: (value) => `${(value ?? 0).toFixed(2)} 秒` }}
+                            onChange={([start, end]) => {
+                                if (Math.round((end - start) * 100) < 50) return;
+                                audioTrimRef.current?.pause();
+                                setAudioTrimStart(start);
+                                setAudioTrimEnd(end);
+                            }}
+                        />
+
+                        <div className="flex justify-between text-xs tabular-nums opacity-60">
+                            <span>{audioTrimStart.toFixed(2)} 秒</span>
+                            <span>选中 {(audioTrimEnd - audioTrimStart).toFixed(2)} 秒</span>
+                            <span>{audioTrimEnd.toFixed(2)} 秒</span>
+                        </div>
+
+                        <div className="flex justify-center">
+                            <Button
+                                type="text"
+                                shape="circle"
+                                aria-label={audioTrimPlaying ? "暂停" : "播放"}
+                                disabled={trimmingAudio || audioTrimTooShort}
+                                icon={audioTrimPlaying ? <Pause className="size-4" /> : <Play className="size-4" />}
+                                onClick={() => {
+                                    const audio = audioTrimRef.current;
+                                    if (!audio) return;
+
+                                    if (!audio.paused) {
+                                        audio.pause();
+                                        return;
+                                    }
+
+                                    if (audio.currentTime < audioTrimStart || audio.currentTime >= audioTrimEnd) {
+                                        audio.currentTime = audioTrimStart;
+                                    }
+
+                                    void audio.play().catch((error) => {
+                                        if (error.name !== "AbortError") message.error("音频试听失败");
+                                    });
+                                }}
+                            />
+                        </div>
+                    </div>
+                </Modal>
+
                 {cropNode?.metadata?.content ? <CanvasNodeCropDialog dataUrl={cropNode.metadata.content} open={Boolean(cropNode)} onClose={() => setCropNodeId(null)} onConfirm={(crop) => cropImageNode(cropNode!, crop)} /> : null}
 
                 {maskEditNode?.metadata?.content && maskEditConfig ? (
@@ -4277,6 +4513,7 @@ function InfiniteCanvasPage({ projectId }: { projectId: string }) {
             </section>
             {assistantMounted ? (
                 <CanvasAssistantPanel
+                    canvasId={projectId}
                     nodes={nodes}
                     selectedNodeIds={selectedNodeIds}
                     referenceNodeClick={agentReferenceNodeClick}
@@ -4785,12 +5022,14 @@ function buildAudioGenerationMetadata(config: AiConfig, sourceMetadata?: CanvasN
         mimoVoiceDesignPrompt: config.mimoVoiceDesignPrompt,
         geminiTtsVoice: config.geminiTtsVoice,
         mimoVoiceCloneAudioNodeId: sourceMetadata?.mimoVoiceCloneAudioNodeId,
+        referenceAudioNodeId: sourceMetadata?.referenceAudioNodeId,
     };
 }
 
-function selectMiMoVoiceCloneReference(config: AiConfig, metadata: CanvasNodeMetadata | undefined, references: ReferenceAudio[]) {
-    if (!isMimoVoiceCloneModel(config.model || config.audioModel)) return undefined;
-    const selectedId = metadata?.mimoVoiceCloneAudioNodeId || "";
+function selectAudioReference(config: AiConfig, metadata: CanvasNodeMetadata | undefined, references: ReferenceAudio[]) {
+    const autodl = isAutoDLConfig(config, config.model || config.audioModel);
+    if (!autodl && !isMimoVoiceCloneModel(config.model || config.audioModel)) return undefined;
+    const selectedId = (autodl ? metadata?.referenceAudioNodeId : metadata?.mimoVoiceCloneAudioNodeId) || "";
     if (selectedId) {
         const selected = references.find((item) => item.id === selectedId);
         if (selected) return selected;
@@ -4999,6 +5238,7 @@ function applyCanvasImageTaskUpdate(nodes: CanvasNodeData[], nodeId: string, tas
             imageTaskId: task.id || node.metadata?.imageTaskId,
         };
         if (!completed || !url) return { ...node, metadata };
+        const stored = task.imageStorage?.find((image) => image?.url === url);
         const isPanorama = isPanoramaNodeType(node.type);
         const requestedSize = nodeSizeFromRatio(node.metadata?.size || "", fallbackSize.width, fallbackSize.height);
         const naturalWidth = task.width || requestedSize?.width || fallbackSize.width || node.width;
@@ -5014,8 +5254,8 @@ function applyCanvasImageTaskUpdate(nodes: CanvasNodeData[], nodeId: string, tas
                 content: url,
                 storageKey: task.storageKey || "",
                 status: NODE_STATUS_SUCCESS,
-                naturalWidth,
-                naturalHeight,
+                naturalWidth: stored?.width || naturalWidth,
+                naturalHeight: stored?.height || naturalHeight,
                 bytes: task.bytes || 0,
                 mimeType: task.mimeType || "image/png",
                 progress: 100,
@@ -5029,6 +5269,7 @@ function applyCanvasImageTaskUpdate(nodes: CanvasNodeData[], nodeId: string, tas
     const childIds = canvasImageTaskChildIds(nodeId, task);
     const childNodes = urls.map((url, index): CanvasNodeData => {
         const id = childIds[index];
+        const stored = task.imageStorage?.find((image) => image?.url === url);
         return {
             ...root,
             id,
@@ -5041,9 +5282,11 @@ function applyCanvasImageTaskUpdate(nodes: CanvasNodeData[], nodeId: string, tas
                 content: url,
                 status: NODE_STATUS_SUCCESS,
                 progress: 100,
-                storageKey: "",
-                mimeType: "image/png",
-                bytes: 0,
+                storageKey: stored?.storageKey || "",
+                mimeType: stored?.mimeType || "image/png",
+                bytes: stored?.bytes || 0,
+                naturalWidth: stored?.width || root.metadata?.naturalWidth,
+                naturalHeight: stored?.height || root.metadata?.naturalHeight,
                 imageTaskId: undefined,
                 imageTaskResultId: task.id,
                 isBatchRoot: undefined,
@@ -5185,6 +5428,7 @@ function canvasAgentTaskSummary(node: CanvasNodeData) {
 function canvasAgentVideoDurationHint(modelName: string) {
     const key = modelKey(modelName);
     if (isCogVideoX3Model(key)) return { values: [5, 10], range: "仅 5 或 10 秒" };
+    if (key.includes("seedance-2-5")) return { min: 4, max: 30, auto: -1, range: "智能（-1）或 4-30 秒，范围内任意整数秒数均可；videoSeconds 仅为默认值，可由本次 seconds 覆盖" };
     if (key.includes("seedance")) return { values: [-1, 4, 5, 6, 8, 10, 12, 15], range: "智能或 4-15 秒" };
     if (isCanvasAgentKlingV3(key)) return { values: [3, 15], range: "3-15 秒" };
     if (isCanvasAgentKlingV26(key)) return { values: [5, 10], range: "仅 5 或 10 秒" };
@@ -5192,10 +5436,11 @@ function canvasAgentVideoDurationHint(modelName: string) {
 }
 
 function validateCanvasAgentVideoSeconds(modelName: string, seconds: number) {
-    if (!Number.isFinite(seconds)) return "视频时长无效，请先向用户确认单镜头时长";
+    if (!Number.isInteger(seconds)) return "视频总时长必须为整数秒";
     const key = modelKey(modelName);
     if (isCogVideoX3Model(key) && seconds !== 5 && seconds !== 10) return "当前 CogVideoX-3 模型仅支持 5 或 10 秒";
-    if (key.includes("seedance") && seconds !== -1 && (seconds < 4 || seconds > 15)) return "当前 Seedance 模型仅支持智能时长或 4-15 秒";
+    const seedanceMaxSeconds = key.includes("seedance-2-5") ? 30 : 15;
+    if (key.includes("seedance") && seconds !== -1 && (seconds < 4 || seconds > seedanceMaxSeconds)) return `当前 Seedance 模型仅支持智能时长或 4-${seedanceMaxSeconds} 秒`;
     if (isCanvasAgentKlingV3(key) && (seconds < 3 || seconds > 15)) return "当前 Kling 3 模型仅支持 3-15 秒";
     if (isCanvasAgentKlingV26(key) && seconds !== 5 && seconds !== 10) return "当前 Kling 2.6 模型仅支持 5 或 10 秒";
     if (!key.includes("seedance") && !key.includes("kling") && (seconds < 1 || seconds > 30)) return "当前视频模型仅支持 1-30 秒";

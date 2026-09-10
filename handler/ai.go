@@ -83,8 +83,10 @@ func AIVideo(w http.ResponseWriter, r *http.Request, id string) {
 }
 
 func AIVideoContent(w http.ResponseWriter, r *http.Request, id string) {
-	if serveGeminiVideoTaskContent(w, r, id) {
-		return
+	for _, adapter := range builtinAIProtocols {
+		if adapter.videoContent != nil && adapter.videoContent(w, r, id) {
+			return
+		}
 	}
 	proxyAIGetRequest(w, r, "/videos/"+id+"/content")
 }
@@ -159,46 +161,20 @@ func proxyAIRequest(w http.ResponseWriter, r *http.Request, path string) {
 		credits *= readAIRequestCount(body, contentType)
 	}
 	upstreamPath := resolveAIProxyPath(channel, modelName, path)
-	if service.IsGeminiChannel(channel) {
-		if path == "/chat/completions" && !geminiStreamRequested(body) {
-			upstreamPath = service.GeminiModelActionPath(modelName, "generateContent")
+	prepared, _, err := prepareAIProtocolRequest(aiProtocolRequest{
+		mode: aiProtocolProxyRequest, body: body, contentType: contentType, modelName: modelName,
+		channel: channel, endpoint: path, path: upstreamPath,
+	})
+	if err != nil {
+		log.Printf("AI proxy normalize %s request failed: model=%s err=%v", prepared.failureLabel, modelName, err)
+		message := "AI 接口请求失败"
+		if prepared.failureLabel == "MiMo TTS" || prepared.failureLabel == "AutoDL" {
+			message = err.Error()
 		}
-		body, err = service.StripGeminiModelField(body, contentType)
-		if err != nil {
-			log.Printf("AI proxy normalize Gemini request failed: model=%s err=%v", modelName, err)
-			Fail(w, "AI 接口请求失败")
-			return
-		}
+		Fail(w, message)
+		return
 	}
-	if service.IsMiMoTTSModelName(modelName) && path == "/audio/speech" {
-		body, contentType, err = normalizeMiMoTTSBody(body, contentType, modelName)
-		if err != nil {
-			log.Printf("AI proxy normalize MiMo TTS request failed: model=%s err=%v", modelName, err)
-			Fail(w, err.Error())
-			return
-		}
-	} else if isKIEChannel(channel, modelName) && isKIECreateTaskPath(upstreamPath) {
-		body, contentType, err = normalizeKIEVideoBody(body, contentType, modelName, channel)
-		if err != nil {
-			log.Printf("AI proxy normalize KIE request failed: model=%s err=%v", modelName, err)
-			Fail(w, "AI 接口请求失败")
-			return
-		}
-	} else if isAPIMartChannel(channel, modelName) && upstreamPath == "/videos/generations" {
-		body, contentType, err = normalizeAPIMartVideoBody(body, contentType, modelName, channel)
-		if err != nil {
-			log.Printf("AI proxy normalize APIMart video request failed: model=%s err=%v", modelName, err)
-			Fail(w, "AI 接口请求失败")
-			return
-		}
-	} else if isAPIMartChannel(channel, modelName) && (upstreamPath == "/images/generations" || upstreamPath == "/images/edits") {
-		body, contentType, err = normalizeAPIMartImageBody(body, contentType, modelName, channel)
-		if err != nil {
-			log.Printf("AI proxy normalize APIMart image request failed: model=%s err=%v", modelName, err)
-			Fail(w, "AI 接口请求失败")
-			return
-		}
-	}
+	body, contentType, upstreamPath = prepared.body, prepared.contentType, prepared.path
 	request, err := http.NewRequest(http.MethodPost, service.BuildModelChannelURL(channel, upstreamPath), bytes.NewReader(body))
 	if err != nil {
 		log.Printf("AI proxy build request failed: url=%s err=%v", service.BuildModelChannelURL(channel, upstreamPath), err)
@@ -277,19 +253,8 @@ func copyAIResponse(w http.ResponseWriter, request *http.Request, channel model.
 		return
 	}
 
-	if copyMiMoTTSResponse(w, response, logContext, onFailure) {
+	if copyAIProtocolResponse(w, response, request, channel, logContext, onFailure) {
 		return
-	}
-	if copyKIEVideoResponse(w, response, request, channel, logContext, onFailure) {
-		return
-	}
-	if isAPIMartChannel(channel, logContext.Model) {
-		if copyAPIMartImageResponse(w, response, request, channel, logContext, onFailure) {
-			return
-		}
-		if copyAPIMartVideoResponse(w, response, request, channel, logContext) {
-			return
-		}
 	}
 
 	for key, values := range response.Header {
@@ -301,11 +266,11 @@ func copyAIResponse(w http.ResponseWriter, request *http.Request, channel model.
 		}
 	}
 	w.WriteHeader(response.StatusCode)
-	responseBody := copyAIResponseBody(w, response.Body)
+	responseBody := copyAIResponseBody(w, response.Body, !strings.HasPrefix(strings.ToLower(response.Header.Get("Content-Type")), "video/"))
 	saveAIProxyLog(logContext, response.StatusCode, responseBody, "")
 }
 
-func copyAIResponseBody(w http.ResponseWriter, body io.Reader) string {
+func copyAIResponseBody(w http.ResponseWriter, body io.Reader, capture bool) string {
 	flusher, canFlush := w.(http.Flusher)
 	buffer := make([]byte, 32*1024)
 	var logBuffer strings.Builder
@@ -315,7 +280,7 @@ func copyAIResponseBody(w http.ResponseWriter, body io.Reader) string {
 			if _, writeErr := w.Write(buffer[:n]); writeErr != nil {
 				return logBuffer.String()
 			}
-			if logBuffer.Len() < 64*1024 {
+			if capture && logBuffer.Len() < 64*1024 {
 				_, _ = logBuffer.Write(buffer[:min(n, 64*1024-logBuffer.Len())])
 			}
 			if canFlush {
@@ -530,15 +495,12 @@ func readAIRequestCount(body []byte, contentType string) int {
 }
 
 func resolveAIProxyURL(channel model.ModelChannel, modelName string, path string) string {
-	if videoID, ok := agnesVideoQueryID(modelName, path); ok {
-		baseURL := strings.TrimRight(strings.TrimSpace(channel.BaseURL), "/")
-		if strings.HasSuffix(strings.ToLower(baseURL), "/v1") {
-			baseURL = strings.TrimRight(baseURL[:len(baseURL)-len("/v1")], "/")
+	for _, adapter := range builtinAIProtocols {
+		if adapter.url != nil {
+			if resolved, ok := adapter.url(channel, modelName, path); ok {
+				return resolved
+			}
 		}
-		values := url.Values{}
-		values.Set("video_id", videoID)
-		values.Set("model_name", modelName)
-		return baseURL + "/agnesapi?" + values.Encode()
 	}
 	return service.BuildModelChannelURL(channel, path)
 }
@@ -555,89 +517,11 @@ func agnesVideoQueryID(modelName string, path string) (string, bool) {
 }
 
 func resolveAIProxyPath(channel model.ModelChannel, modelName string, path string) string {
-	if service.IsGeminiChannel(channel) {
-		switch path {
-		case "/chat/completions":
-			return service.GeminiModelActionPath(modelName, "streamGenerateContent") + "?alt=sse"
-		case "/images/generations", "/images/edits", "/audio/speech":
-			return service.GeminiModelActionPath(modelName, "generateContent")
-		case "/videos":
-			return service.GeminiModelActionPath(modelName, "predictLongRunning")
-		}
-		if strings.HasPrefix(path, "/videos/") && !strings.HasSuffix(path, "/content") {
-			return service.GeminiOperationPath(strings.TrimPrefix(path, "/videos/"))
-		}
-	}
-	if service.IsMiMoTTSModelName(modelName) && path == "/audio/speech" {
-		return "/chat/completions"
-	}
-	if isMiniMaxH3Channel(channel, modelName) {
-		if path == "/videos" {
-			return "/v2/video_generation"
-		}
-		if strings.HasPrefix(path, "/videos/") && !strings.HasSuffix(path, "/content") {
-			taskID := strings.TrimSpace(strings.TrimPrefix(path, "/videos/"))
-			if taskID != "" && !strings.Contains(taskID, "/") {
-				return "/v2/query/video_generation/" + url.PathEscape(taskID)
+	for _, adapter := range builtinAIProtocols {
+		if adapter.path != nil {
+			if resolved, ok := adapter.path(channel, modelName, path); ok {
+				return resolved
 			}
-		}
-		return path
-	}
-	if isCogVideoX3Model(modelName) {
-		if path == "/videos" {
-			return "/videos/generations"
-		}
-		if strings.HasPrefix(path, "/videos/") && !strings.HasSuffix(path, "/content") {
-			taskID := strings.TrimSpace(strings.TrimPrefix(path, "/videos/"))
-			if taskID != "" && !strings.Contains(taskID, "/") {
-				return "/async-result/" + url.PathEscape(taskID)
-			}
-		}
-		return path
-	}
-	if isKIEChannel(channel, modelName) {
-		if path == "/images/generations" && strings.EqualFold(strings.TrimSpace(modelName), "grok-imagine-image-2-0/text-to-image") {
-			return "/client/tasks"
-		}
-		if path == "/videos" || path == "/images/generations" || path == "/images/edits" {
-			return "/jobs/createTask"
-		}
-		if strings.HasPrefix(path, "/videos/") && !strings.HasSuffix(path, "/content") {
-			taskID := strings.TrimSpace(strings.TrimPrefix(path, "/videos/"))
-			if taskID != "" && !strings.Contains(taskID, "/") {
-				return "/jobs/recordInfo?taskId=" + url.QueryEscape(taskID)
-			}
-		}
-		return path
-	}
-	if isAPIMartChannel(channel, modelName) {
-		if path == "/videos" {
-			return "/videos/generations"
-		}
-		if path == "/images/edits" {
-			model := normalizeAPIMartModelName(modelName)
-			if strings.Contains(model, "grok-imagine") && strings.Contains(model, "edit") {
-				return path
-			}
-			return "/images/generations"
-		}
-		if strings.HasPrefix(path, "/videos/") && !strings.HasSuffix(path, "/content") {
-			taskID := strings.TrimSpace(strings.TrimPrefix(path, "/videos/"))
-			if taskID != "" && !strings.Contains(taskID, "/") {
-				return "/tasks/" + url.PathEscape(taskID) + "?language=zh"
-			}
-		}
-		return path
-	}
-	if strings.EqualFold(strings.TrimSpace(channel.Protocol), "grok2api") && (strings.EqualFold(strings.TrimSpace(modelName), "grok-imagine-video") || strings.EqualFold(strings.TrimSpace(modelName), "grok-imagine-video-1.5")) && path == "/videos" {
-		return "/videos/generations"
-	}
-	if isArkSeedanceVideo(channel.BaseURL, modelName) {
-		if path == "/videos" {
-			return "/contents/generations/tasks"
-		}
-		if strings.HasPrefix(path, "/videos/") && !strings.HasSuffix(path, "/content") {
-			return "/contents/generations/tasks/" + strings.TrimPrefix(path, "/videos/")
 		}
 	}
 	return path

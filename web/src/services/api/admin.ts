@@ -1,3 +1,4 @@
+import type { ModelChannelProtocol } from "@/lib/model-channel";
 import { apiDelete, apiGet, apiPost, compactApiParams } from "@/services/api/request";
 import type { Prompt, PromptListResponse } from "@/services/api/prompts";
 import type { AgentSkill, AgentSkillFile } from "@/services/api/agent-skills";
@@ -180,7 +181,7 @@ export async function deleteAdminAsset(token: string, id: string) {
 
 export type AdminModelChannel = {
     id: string;
-    protocol: "openai" | "gemini" | "grok2api" | "metaso" | "apimart" | "kie" | "mimo";
+    protocol: ModelChannelProtocol;
     name: string;
     baseUrl: string;
     apiKey: string;
@@ -296,6 +297,7 @@ export type AdminPrivateSettings = {
         mode: string;
         allowUserProvider: boolean;
         allowUserGlobalProvider: boolean;
+        autoSyncAllAssets: boolean;
         providers: AdminStorageProvider[];
         roundRobinCursor: number;
         capacityCheck: {

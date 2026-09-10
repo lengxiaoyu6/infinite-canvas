@@ -4,6 +4,7 @@ import { useMemo } from "react";
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 
+import { directAIProviderForProtocol, type DirectAIProvider, type ModelChannelProtocol } from "@/lib/model-channel";
 import { apiGet } from "@/services/api/request";
 import type { AdminPublicModelChannelInfo, AdminPublicSettings } from "@/services/api/admin";
 import { useUserStore } from "@/stores/use-user-store";
@@ -11,7 +12,7 @@ import { useUserStore } from "@/stores/use-user-store";
 export type LocalModelChannel = {
     id: string;
     systemChannelId?: string;
-    protocol: "openai" | "gemini" | "grok2api" | "metaso" | "apimart" | "kie" | "mimo";
+    protocol: ModelChannelProtocol;
     name: string;
     baseUrl: string;
     apiKey: string;
@@ -82,7 +83,7 @@ export type AiConfig = {
         workflowAgent: string;
     };
     localChannels: LocalModelChannel[];
-    publicChannels: Array<{ id?: string; protocol?: LocalModelChannel["protocol"]; name?: string; baseUrl?: string; models?: string[]; weight?: number; timeout?: number; enabled?: boolean; remark?: string; hasSystemApiKey?: boolean }>;
+    publicChannels: Array<{ id?: string; systemChannelId?: string; protocol?: LocalModelChannel["protocol"]; name?: string; baseUrl?: string; models?: string[]; weight?: number; timeout?: number; enabled?: boolean; remark?: string; hasSystemApiKey?: boolean }>;
     syncStorageConfig: boolean;
     syncWebDAVStorageConfig: boolean;
     activeChannelId: string;
@@ -255,6 +256,7 @@ function preferredModel(models: string[], predicate: (model: string) => boolean)
 function isVideoModelName(model: string) {
     const value = model.toLowerCase();
     return (
+        value === "wan2.2animate-v4-motion_retargeting" ||
         value.includes("video") ||
         value.includes("seedance") ||
         value.includes("sora") ||
@@ -289,6 +291,9 @@ function isVideoModelName(model: string) {
         value.includes("wan/2-7-image-to-video") ||
         value.includes("wan/2-7-videoedit") ||
         value.includes("wan/2-7-r2v") ||
+        value.includes("sd2.0 720p") ||
+        value.includes("sd2.5 480p") ||
+        value.includes("sd2.5 720p") ||
         (value.includes("grok-imagine") && (value.includes("/upscale") || value.includes("/extend")))
     );
 }
@@ -342,6 +347,10 @@ function isTextModelName(model: string) {
 
 export function modelMatchesCapability(model: string, capability?: ModelCapability, protocol = "") {
     if (!capability) return true;
+    if (protocol === "autodl") {
+        if (capability === "audio") return model === "indextts2-v1";
+        return capability === "video" && (model.startsWith("minimax_h3_") || model === "wan2.2animate-v4-motion_retargeting");
+    }
     if (protocol === "gemini") {
         const value = model.toLowerCase();
         const video = /^models\/veo-|^veo-/.test(value);
@@ -631,7 +640,7 @@ export function channelIdForActiveModel(config: AiConfig) {
     const channels = config.channelMode === "remote" ? config.publicChannels : normalizeLocalChannels(config);
     const selectedChannelId = config.model === config.imageModel ? config.imageChannelId : config.model === config.videoModel ? config.videoChannelId : config.model === config.audioModel ? config.audioChannelId : config.model === config.textModel ? config.textChannelId : "";
     const selectedChannel = channels.find((channel) => channel.id === selectedChannelId);
-    if (selectedChannel?.protocol === "gemini") return selectedChannelId;
+    if (selectedChannel?.protocol === "gemini" || selectedChannel?.protocol === "autodl") return selectedChannelId;
     if (!selectedChannel) {
         const geminiChannel = channels.find((channel) => channel.protocol === "gemini" && (channel.models || []).includes(config.model));
         if (geminiChannel) return geminiChannel.id || "";
@@ -674,9 +683,8 @@ export function channelProtocolForConfig(config: AiConfig): LocalModelChannel["p
     return channel?.protocol || "openai";
 }
 
-export type DirectAIProvider = "kie" | "apimart";
+export type { DirectAIProvider } from "@/lib/model-channel";
 
 export function directAIProviderForConfig(config: AiConfig): DirectAIProvider | null {
-    const protocol = channelProtocolForConfig(config);
-    return protocol === "kie" || protocol === "apimart" ? protocol : null;
+    return directAIProviderForProtocol(channelProtocolForConfig(config));
 }
