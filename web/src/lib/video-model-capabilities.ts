@@ -54,6 +54,12 @@ export function supportsVideoFrameReferences(modelName: string, protocol = "") {
         model.includes("seedance-1-5") ||
         model.includes("seedance-1-0") ||
         model === "happyhorse-1-1" ||
+        (protocol === "tokendance" && model === "happyhorse-1-1-i2v") ||
+        (protocol === "tokendance" && [
+            "happyhorse-1-0-i2v", "minimax-h3-max",
+            "wan3-0-video", "wan3-0-video-prime",
+            "kling-3-0", "kling-3-0-turbo", "kling-3-0-omni",
+        ].includes(model)) ||
         (protocol === "gemini" && (model.startsWith("veo-3-1") || model.startsWith("veo3-1"))) ||
         (model.includes("veo3-1") && model.includes("official")) ||
         model.includes("minimax-hailuo-02") ||

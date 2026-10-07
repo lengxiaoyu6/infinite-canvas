@@ -2,6 +2,7 @@ import axios from "axios";
 
 import { dataUrlToFile, readFileAsDataUrl } from "@/lib/image-utils";
 import { isMiniMaxH3Config, normalizeMiniMaxH3Duration, normalizeMiniMaxH3Ratio, normalizeMiniMaxH3Resolution } from "@/lib/minimax-video";
+import { modelChannelAttributionHeaders } from "@/lib/model-channel";
 import { dataUrlToGeminiInlineData, geminiActionUrl, geminiDirectHeaders, geminiErrorMessage, geminiOperationUrl, isGeminiConfig, isGeminiVideoModel } from "@/lib/gemini";
 import { isGeminiVeo31Model, normalizeGeminiVideoDuration, normalizeGeminiVideoRatio, normalizeGeminiVideoResolution } from "@/lib/gemini-video";
 import { boolConfig, isSeedanceVideoConfig, normalizeSeedanceDuration, normalizeSeedanceRatio } from "@/lib/seedance-video";
@@ -16,7 +17,7 @@ import { useUserStore } from "@/stores/use-user-store";
 import type { ReferenceImage } from "@/types/image";
 import type { ReferenceAudio, ReferenceVideo } from "@/types/media";
 
-export type VideoResponse = { id: string; task_id?: string; video_id?: string; source_id?: string; sourceId?: string; channelId?: string; userChannelId?: string; channelName?: string; channel_id?: string; user_channel_id?: string; channel_name?: string; status?: string; video_url?: string; url?: string; storageKey?: string; progress?: number; error?: { message?: string }; size?: string; seconds?: string; model?: string; created_at?: string | number; createdAt?: string | number; started_at?: string | number; startedAt?: string | number; request_body?: string };
+export type VideoResponse = { id: string; task_id?: string; video_id?: string; source_id?: string; sourceId?: string; channelId?: string; userChannelId?: string; channelName?: string; workflowRef?: string; channel_id?: string; user_channel_id?: string; channel_name?: string; status?: string; video_url?: string; url?: string; storageKey?: string; progress?: number; error?: { message?: string }; size?: string; seconds?: string; model?: string; created_at?: string | number; createdAt?: string | number; started_at?: string | number; startedAt?: string | number; request_body?: string };
 type ApiVideoEnvelope = { code: number; data?: VideoResponse | VideoResponse[] | null; msg?: string; message?: string };
 type ApiVideoResponse = VideoResponse | ApiVideoEnvelope;
 export type VideoGenerationResult = { id: string; url: string; durationMs: number; width: number; height: number; bytes: number; mimeType: string; task: VideoResponse };
@@ -84,7 +85,10 @@ function aiHeaders(config: AiConfig) {
     if (config.channelMode === "remote") return { Authorization: `Bearer ${token}`, ...(channelIdForActiveModel(config) ? { "X-Model-Channel-ID": channelIdForActiveModel(config) } : {}) };
     if (token) return { Authorization: `Bearer ${token}`, ...(channelIdForActiveModel(config) ? { "X-User-Model-Channel-ID": channelIdForActiveModel(config) } : {}) };
     if (isGeminiConfig(config)) return geminiDirectHeaders(config);
-    return { Authorization: `Bearer ${localChannelForActiveModel(config)?.apiKey || config.apiKey}` };
+    return {
+        Authorization: `Bearer ${localChannelForActiveModel(config)?.apiKey || config.apiKey}`,
+        ...modelChannelAttributionHeaders(channelProtocolForConfig(config)),
+    };
 }
 
 function refreshRemoteUser(config: AiConfig) {
@@ -228,9 +232,10 @@ function isGrok2APIVideoConfig(config: AiConfig, model: string) {
 
 async function cacheProtectedVideo(config: AiConfig, model: string, task: VideoResponse) {
     const url = task.video_url || task.url || "";
-    const needs88APIContent = videoChannelProtocol(config, model) === "88api" && !url;
-    const needsGrokContent = isGrok2APIVideoConfig(config, model) && /\/v1\/videos\/[^/]+\/content(?:[?#]|$)/.test(url);
-    if (!isCompletedVideoStatus(task.status) || task.storageKey || (!needs88APIContent && !needsGrokContent)) return task;
+    const protocol = videoChannelProtocol(config, model);
+    const needsTaskContent = !url && (protocol === "88api" || ("object" in task && task.object === "video"));
+    const needsContentURL = /\/videos\/[^/?]+\/content(?:[?#]|$)/.test(url);
+    if (!isCompletedVideoStatus(task.status) || task.storageKey || (!needsTaskContent && !needsContentURL)) return task;
     const taskId = task.task_id || task.id || task.video_id || "";
     const response = await fetch(`${aiApiUrl(config, `/videos/${encodeURIComponent(taskId)}/content`)}?model=${encodeURIComponent(model)}`, { headers: aiHeaders(config) });
     if (!response.ok) throw new VideoRequestError(`视频内容下载失败：${response.status}`, task);
@@ -303,7 +308,9 @@ async function create88APIVideoRequestBody(config: AiConfig, model: string, prom
         model,
         prompt,
         seconds: normalizeVideoSecondsForModel(model, config.videoSeconds),
-        generate_audio: boolConfig(config.videoGenerateAudio, false),
+        ...(supportsVideoAudioGeneration(model, "88api")
+            ? { generate_audio: boolConfig(config.videoGenerateAudio, false) }
+            : {}),
     };
     if (images.length) body.images = images;
     if (geminiOmni && videos[0]) body.video = videos[0];
@@ -324,9 +331,9 @@ async function createVideoRequestBody(config: AiConfig, model: string, prompt: s
         if (!capabilities) throw new VideoRequestError("当前 AutoDL 工作流尚未适配");
         const { autoDLReferenceURL } = await import("./direct-ai");
         const [images, videos, audios, firstFrame, lastFrame] = await Promise.all([
-            Promise.all((capabilities.imageMax ? input.references : []).map(autoDLReferenceURL)),
-            Promise.all((capabilities.videoMax ? input.videoReferences : []).map(autoDLReferenceURL)),
-            Promise.all((capabilities.audioMax ? input.audioReferences : []).map(autoDLReferenceURL)),
+            Promise.all((capabilities.imageMax ? input.references : []).map((reference) => autoDLReferenceURL(reference))),
+            Promise.all((capabilities.videoMax ? input.videoReferences : []).map((reference) => autoDLReferenceURL(reference))),
+            Promise.all((capabilities.audioMax ? input.audioReferences : []).map((reference) => autoDLReferenceURL(reference))),
             capabilities.firstFrame && input.firstFrame ? autoDLReferenceURL(input.firstFrame) : Promise.resolve(""),
             capabilities.lastFrame && input.lastFrame ? autoDLReferenceURL(input.lastFrame) : Promise.resolve(""),
         ]);
@@ -337,7 +344,34 @@ async function createVideoRequestBody(config: AiConfig, model: string, prompt: s
             ...(lastFrame ? { last_frame_url: lastFrame } : {}),
         };
     }
+    if (videoChannelProtocol(config, model) === "tokendance") {
+        const { autoDLReferenceURL } = await import("./direct-ai");
+        const referenceURL = (reference: ReferenceImage | ReferenceVideo | ReferenceAudio) => autoDLReferenceURL(reference, "TokenDance");
+        const [images, videos, audios, firstFrame, lastFrame] = await Promise.all([
+            Promise.all(input.references.map(referenceURL)),
+            Promise.all(input.videoReferences.map(referenceURL)),
+            Promise.all(input.audioReferences.map(referenceURL)),
+            input.firstFrame ? referenceURL(input.firstFrame) : Promise.resolve(""),
+            input.lastFrame ? referenceURL(input.lastFrame) : Promise.resolve(""),
+        ]);
+        return {
+            model,
+            prompt,
+            seconds: normalizeVideoSecondsForModel(model, config.videoSeconds),
+            size: normalizeSeedanceRatio(config.size),
+            resolution_name: normalizeVideoResolution(config.vquality),
+            video_generate_audio: boolConfig(config.videoGenerateAudio, false),
+            video_watermark: boolConfig(config.videoWatermark, false),
+            character_orientation: normalizeCharacterOrientation(config.videoCharacterOrientation),
+            ...(images.length ? { "input_reference[]": images } : {}),
+            ...(videos.length ? { "video_reference[]": videos } : {}),
+            ...(audios.length ? { "audio_reference[]": audios } : {}),
+            ...(firstFrame ? { first_frame_url: firstFrame } : {}),
+            ...(lastFrame ? { last_frame_url: lastFrame } : {}),
+        };
+    }
     if (videoChannelProtocol(config, model) === "88api") return create88APIVideoRequestBody(config, model, prompt, input);
+    if (videoChannelProtocol(config, model) === "ark") return createArkSeedanceVideoRequestBody(config, model, prompt, input);
     const size = normalizeVideoSize(config.size);
     if (isGeminiVideoModel(model) && isGeminiConfig(config, model)) return createGeminiVeoRequestBody(config, model, prompt, input);
     if (isGrok2APIVideoConfig(config, model)) return createGrok2APIVideoRequestBody(config, model, prompt, input);
@@ -423,6 +457,30 @@ async function createVideoRequestBody(config: AiConfig, model: string, prompt: s
     const audioFiles = kling ? [] : await Promise.all(input.audioReferences.map(mediaReferenceToFormValue));
     audioFiles.forEach((file) => body.append("audio_reference[]", file));
     return body;
+}
+
+async function createArkSeedanceVideoRequestBody(config: AiConfig, model: string, prompt: string, input: Required<VideoReferenceInput>) {
+    const [images, firstFrame, lastFrame] = await Promise.all([
+        Promise.all(input.references.map(imageToAgnesReference)),
+        input.firstFrame ? imageToAgnesReference(input.firstFrame) : "",
+        input.lastFrame ? imageToAgnesReference(input.lastFrame) : "",
+    ]);
+    const videos = input.videoReferences.map((item) => item.url).filter(Boolean);
+    const audios = input.audioReferences.map((item) => item.url).filter(Boolean);
+    return {
+        model,
+        prompt,
+        seconds: normalizeSeedanceDuration(config.videoSeconds, modelKey(model).includes("seedance-2-5") ? 30 : 15),
+        size: normalizeSeedanceRatio(config.size),
+        resolution_name: normalizeVideoResolution(config.vquality),
+        video_generate_audio: boolConfig(config.videoGenerateAudio, false),
+        video_watermark: boolConfig(config.videoWatermark, false),
+        ...(images.length ? { "input_reference[]": images } : {}),
+        ...(firstFrame ? { first_frame_url: firstFrame } : {}),
+        ...(lastFrame ? { last_frame_url: lastFrame } : {}),
+        ...(videos.length ? { "video_reference[]": videos } : {}),
+        ...(audios.length ? { "audio_reference[]": audios } : {}),
+    };
 }
 
 async function createMiniMaxH3VideoRequestBody(config: AiConfig, model: string, prompt: string, input: Required<VideoReferenceInput>) {
@@ -724,7 +782,7 @@ function normalizeVideoSecondsForModel(model: string, value: string) {
     const seconds = Number(normalizeVideoSeconds(value));
     const key = modelKey(model);
     if (key.includes("sora-2")) return closestAllowedSeconds(seconds, [4, 8, 12, 16, 20]);
-    if (key.includes("veo3-1") || key.includes("veo-3-1")) return "8";
+    if (key.includes("veo3-1") || key.includes("veo-3-1")) return closestAllowedSeconds(seconds, [4, 6, 8]);
     if (key.includes("minimax-hailuo-02")) return closestAllowedSeconds(seconds, [5, 10]);
     if (key.includes("minimax-hailuo-2-3")) return closestAllowedSeconds(seconds, [6, 10]);
     if (key.includes("omni-flash-ext")) return closestAllowedSeconds(seconds, [4, 6, 8, 10]);

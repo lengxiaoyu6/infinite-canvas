@@ -577,7 +577,7 @@ function TextContent({ node, theme, isEditingContent, textareaRef, mentionRefere
                 <div
                     className="thin-scrollbar block h-full w-full overflow-y-auto whitespace-pre-wrap break-words bg-transparent p-4 font-mono"
                     style={textStyle}
-                    onWheel={(event) => event.stopPropagation()}
+                    onWheelCapture={(event) => event.stopPropagation()}
                 >
                     {node.metadata?.content || <span style={{ color: theme.node.placeholder }}>双击编辑文字</span>}
                 </div>
@@ -669,6 +669,7 @@ function VideoNodeContent({ node, theme, isSelected, onViewImage }: NodeContentR
         else video.pause();
     };
     useEffect(() => {
+        if (!isSelected) videoRef.current?.pause();
         if (isSelected) videoRef.current?.focus({ preventScroll: true });
         else if (document.activeElement === videoRef.current) videoRef.current?.blur();
     }, [isSelected, node.metadata?.content]);

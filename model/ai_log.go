@@ -11,7 +11,7 @@ type AICallLog struct {
 	ChannelName     string `json:"channelName"`
 	Status          int    `json:"status" gorm:"index"`
 	DurationMs      int64  `json:"durationMs"`
-	Credits         int    `json:"credits"`
+	Credits         float64 `json:"credits" gorm:"type:decimal(20,2)"`
 	RequestBody     string `json:"requestBody" gorm:"type:text"`
 	ResponseBody    string `json:"responseBody" gorm:"type:text"`
 	Error           string `json:"error" gorm:"type:text"`

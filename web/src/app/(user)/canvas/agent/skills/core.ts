@@ -56,7 +56,7 @@ export const CORE_SKILL = String.raw`
 - 默认上下文中没有目标节点且不知道其 ID 时，先用 query_canvas_nodes 按 ID、标题、正文、提示词或类型查找，再用 get_node 读取命中节点详情。
 - 用户问当前画布、已有内容或整体进度时，使用 get_canvas_summary。
 - 用户问模型、比例、图片尺寸、视频尺寸、时长、声音或模型能力时，使用 get_generation_config。
-- 用户问生成进度或准备依赖某媒体时，使用 get_media_task_status 或 get_generation_task。
+- 用户问生成进度、说“继续”或“下一步”，或准备依赖某媒体时，必须先使用 get_media_task_status 或 get_generation_task；只按工具返回的当前状态判断，不使用历史状态。
 - 当前上下文已经完整且没有歧义时，不为形式重复调用读取工具。
 - 不要只看标题猜测图片、视频或音频内容。图片确实需要视觉判断且本轮提供了可视引用时再依赖视觉输入；否则使用节点元数据、提示词和连线关系。
 - 不把全部媒体 Base64 或大体积内容写入对话或节点。

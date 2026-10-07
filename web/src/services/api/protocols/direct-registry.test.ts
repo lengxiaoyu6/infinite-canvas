@@ -5,15 +5,17 @@ import { collectHTTPURLs, normalizeDirectStatus, readDirectError } from "./share
 
 // Expectations are taken from direct-ai.ts at a27f046, before protocol extraction.
 test("direct protocols preserve polling paths and task ID precedence", () => {
-    assert.deepEqual(Object.keys(directProtocolAdapters).sort(), ["apimart", "autodl", "kie"]);
+    assert.deepEqual(Object.keys(directProtocolAdapters).sort(), ["apimart", "ark", "autodl", "kie"]);
     assert.equal(directProtocolAdapters.kie.pollPath("task/a b?"), "/jobs/recordInfo?taskId=task%2Fa%20b%3F");
     assert.equal(directProtocolAdapters.apimart.pollPath("task/a b?"), "/tasks/task%2Fa%20b%3F?language=zh");
+    assert.equal(directProtocolAdapters.ark.pollPath("task/a b?"), "/contents/generations/tasks/task%2Fa%20b%3F");
     assert.equal(directProtocolAdapters.kie.readTaskId({ data: { taskId: " kie-task ", task_id: "ignored" } }), "kie-task");
     assert.equal(directProtocolAdapters.kie.readTaskId({ data: { taskId: 123, id: "ignored" } }), "");
     assert.equal(directProtocolAdapters.apimart.readTaskId({ data: [{ task_id: " array-task ", id: "ignored" }] }), "array-task");
     assert.equal(directProtocolAdapters.apimart.readTaskId({ data: { task_id: " task-id ", id: "fallback" } }), "task-id");
     assert.equal(directProtocolAdapters.apimart.readTaskId({ data: { task_id: " ", id: " fallback " } }), "fallback");
     assert.equal(directProtocolAdapters.apimart.readTaskId({ data: [{ id: "not-a-task-id" }] }), "");
+    assert.equal(directProtocolAdapters.ark.readTaskId({ id: " ark-task " }), "ark-task");
 });
 
 test("created video status retains provider-specific behavior", () => {
@@ -21,6 +23,7 @@ test("created video status retains provider-specific behavior", () => {
     assert.equal(directProtocolAdapters.apimart.readCreatedVideoStatus({ data: [{ status: "success" }] }), "completed");
     assert.equal(directProtocolAdapters.apimart.readCreatedVideoStatus({ data: [{ status: "cancelled" }] }), "failed");
     assert.equal(directProtocolAdapters.apimart.readCreatedVideoStatus({ data: { status: "completed" } }), "processing");
+    assert.equal(directProtocolAdapters.ark.readCreatedVideoStatus({ status: "queued" }), "processing");
 });
 
 test("APIMart synchronous images keep URL order, nesting and deduplication", () => {
@@ -79,6 +82,9 @@ test("video polling preserves result URL, progress types and error precedence", 
         });
     }
     assert.equal(directProtocolAdapters.kie.readVideoPoll({ data: { failMsg: "first", failCode: "second" }, error: { message: "outer" } }, "id", "model").error?.message, "first");
+    assert.deepEqual(directProtocolAdapters.ark.readVideoPoll({ id: "ark-task", status: "succeeded", content: { video_url: "https://media.example/ark.mp4" } }, "fallback", "seedance"), {
+        id: "ark-task", task_id: "ark-task", status: "completed", video_url: "https://media.example/ark.mp4", url: "https://media.example/ark.mp4", model: "seedance",
+    });
 });
 
 test("shared parsing keeps business errors and does not treat plain messages as failures", () => {

@@ -19,7 +19,7 @@ import (
 
 const userModelChannelHeader = "X-User-Model-Channel-ID"
 
-func selectAIRequestChannel(user model.AuthUser, modelName string, channelID string, userChannelID string) (model.ModelChannel, string, error) {
+func selectAIRequestChannel(user model.AuthUser, modelName string, channelID string, userChannelID string, publicOnly bool) (model.ModelChannel, string, error) {
 	userChannelID = strings.TrimSpace(userChannelID)
 	if userChannelID != "" {
 		channel, err := service.SelectUserLocalModelChannelForModel(user.ID, modelName, userChannelID)
@@ -28,7 +28,7 @@ func selectAIRequestChannel(user model.AuthUser, modelName string, channelID str
 	if !service.UserCanUseRemoteModelChannel(user) {
 		return model.ModelChannel{}, "", fmt.Errorf("当前账号未开放云端渠道")
 	}
-	if user.Role != model.UserRoleAdmin {
+	if publicOnly && user.Role != model.UserRoleAdmin {
 		available, err := service.PublicModelAvailable(modelName)
 		if err != nil {
 			return model.ModelChannel{}, "", err
@@ -37,14 +37,14 @@ func selectAIRequestChannel(user model.AuthUser, modelName string, channelID str
 			return model.ModelChannel{}, "", fmt.Errorf("当前账号未开放该模型")
 		}
 	}
-	channel, err := service.SelectModelChannelForModel(modelName, channelID)
+	channel, err := service.SelectModelChannelForModel(modelName, channelID, publicOnly)
 	return channel, "", err
 }
 
 func failAIChannelSelect(w http.ResponseWriter, err error, fallback string) {
 	message := strings.TrimSpace(err.Error())
 	switch message {
-	case "当前账号未开放云端渠道", "当前账号未开放该模型", "请先登录", "缺少模型名称", "缺少模型渠道", "个人密钥渠道未开放", "个人密钥渠道不存在", "个人密钥渠道未填写 API Key", "个人密钥渠道不可用", "个人密钥渠道不支持该模型", "个人密钥渠道未开放该模型", "指定模型渠道不可用":
+	case "当前账号未开放云端渠道", "当前账号未开放该模型", "请先登录", "缺少模型名称", "缺少模型渠道", "个人密钥渠道未开放", "个人密钥渠道不存在", "个人密钥渠道未填写 API Key", "个人密钥渠道不可用", "个人密钥渠道不支持该模型", "个人密钥渠道未开放该模型", "本地渠道配置不完整", "本地渠道不支持该模型", "指定模型渠道不可用", "模型未开放":
 		Fail(w, message)
 	default:
 		Fail(w, fallback)
@@ -115,7 +115,7 @@ func proxyAIGetRequest(w http.ResponseWriter, r *http.Request, path string) {
 	if strings.TrimSpace(modelName) == "" {
 		modelName = "Agnes-Video-V2.0"
 	}
-	channel, _, err := selectAIRequestChannel(user, modelName, r.Header.Get("X-Model-Channel-ID"), r.Header.Get(userModelChannelHeader))
+	channel, _, err := selectAIRequestChannel(user, modelName, r.Header.Get("X-Model-Channel-ID"), r.Header.Get(userModelChannelHeader), false)
 	if err != nil {
 		log.Printf("AI proxy select channel failed: model=%s err=%v", modelName, err)
 		failAIChannelSelect(w, err, "AI 接口请求失败")
@@ -144,13 +144,13 @@ func proxyAIRequest(w http.ResponseWriter, r *http.Request, path string) {
 		Fail(w, "未登录或权限不足")
 		return
 	}
-	channel, userChannelID, err := selectAIRequestChannel(user, modelName, r.Header.Get("X-Model-Channel-ID"), r.Header.Get(userModelChannelHeader))
+	channel, userChannelID, err := selectAIRequestChannel(user, modelName, r.Header.Get("X-Model-Channel-ID"), r.Header.Get(userModelChannelHeader), true)
 	if err != nil {
 		log.Printf("AI proxy select channel failed: model=%s err=%v", modelName, err)
 		failAIChannelSelect(w, err, "AI 接口请求失败")
 		return
 	}
-	credits := 0
+	credits := 0.0
 	if userChannelID == "" {
 		credits, err = service.ModelCost(modelName)
 		if err != nil {
@@ -158,7 +158,7 @@ func proxyAIRequest(w http.ResponseWriter, r *http.Request, path string) {
 			Fail(w, "AI 接口请求失败")
 			return
 		}
-		credits *= readAIRequestCount(body, contentType)
+		credits *= float64(readAIRequestCount(body, contentType, false))
 	}
 	upstreamPath := resolveAIProxyPath(channel, modelName, path)
 	prepared, _, err := prepareAIProtocolRequest(aiProtocolRequest{
@@ -204,7 +204,7 @@ func proxyAIRequest(w http.ResponseWriter, r *http.Request, path string) {
 	}, func() {
 		if credits > 0 {
 			if err := service.RefundUserCredits(user.ID, modelName, credits, upstreamPath); err != nil {
-				log.Printf("AI proxy refund credits failed: user=%s model=%s credits=%d err=%v", user.ID, modelName, credits, err)
+				log.Printf("AI proxy refund credits failed: user=%s model=%s credits=%g err=%v", user.ID, modelName, credits, err)
 			}
 		}
 	})
@@ -225,7 +225,7 @@ type aiLogContext struct {
 	Channel         model.ModelChannel
 	UserID          string
 	UserDisplayName string
-	Credits         int
+	Credits         float64
 	RequestBody     string
 }
 
@@ -249,7 +249,11 @@ func copyAIResponse(w http.ResponseWriter, request *http.Request, channel model.
 			onFailure()
 		}
 		saveAIProxyLog(logContext, response.StatusCode, string(payload), strings.TrimSpace(string(payload)))
-		Fail(w, readUpstreamAIErrorMessage(payload, response.StatusCode))
+		message := readUpstreamAIErrorMessage(payload, response.StatusCode)
+		if service.IsTokenDanceChannel(channel) {
+			message = firstNonEmpty(service.TokenDanceRecoveryMessage(response.Header.Get("TokenDance-Recovery-Action")), message)
+		}
+		Fail(w, message)
 		return
 	}
 
@@ -466,8 +470,9 @@ func readMultipartModel(body []byte, contentType string) string {
 	return ""
 }
 
-func readAIRequestCount(body []byte, contentType string) int {
+func readAIRequestCount(body []byte, contentType string, video bool) int {
 	count := 1
+	var videoPayload map[string]any
 	if strings.HasPrefix(contentType, "multipart/form-data") {
 		_, params, err := mime.ParseMediaType(contentType)
 		if err != nil {
@@ -478,8 +483,26 @@ func readAIRequestCount(body []byte, contentType string) int {
 			return count
 		}
 		defer form.RemoveAll()
-		if values := form.Value["n"]; len(values) > 0 {
+		if video {
+			count = 0
+			for _, field := range []string{"seconds", "duration"} {
+				if values := form.Value[field]; len(values) > 0 {
+					if _, err := fmt.Sscan(values[0], &count); err == nil && count != 0 {
+						break
+					}
+				}
+			}
+		} else if values := form.Value["n"]; len(values) > 0 {
 			_, _ = fmt.Sscan(values[0], &count)
+		}
+	} else if video {
+		count = 0
+		if json.Unmarshal(body, &videoPayload) == nil {
+			for _, field := range []string{"seconds", "duration", "parameters.durationSeconds"} {
+				if _, err := fmt.Sscan(readStringPath(videoPayload, field), &count); err == nil && count != 0 {
+					break
+				}
+			}
 		}
 	} else {
 		var payload struct {
@@ -487,6 +510,16 @@ func readAIRequestCount(body []byte, contentType string) int {
 		}
 		_ = json.Unmarshal(body, &payload)
 		count = payload.N
+	}
+	if video && count == -1 {
+		return 15
+	}
+	if video && count < 1 {
+		frames := readIntPath(videoPayload, "num_frames")
+		frameRate := readIntPath(videoPayload, "frame_rate")
+		if frames > 1 && frameRate > 0 {
+			count = (frames - 1 + frameRate - 1) / frameRate
+		}
 	}
 	if count < 1 {
 		return 1
@@ -529,12 +562,6 @@ func resolveAIProxyPath(channel model.ModelChannel, modelName string, path strin
 
 func isCogVideoX3Model(modelName string) bool {
 	return strings.EqualFold(strings.TrimSpace(modelName), "cogvideox-3")
-}
-
-func isArkSeedanceVideo(baseURL string, modelName string) bool {
-	base := strings.ToLower(baseURL)
-	model := strings.ToLower(modelName)
-	return strings.Contains(model, "seedance") || strings.Contains(model, "doubao-seedance") || strings.Contains(base, "/api/plan/v3")
 }
 
 func isAgnesVideoModel(modelName string) bool {

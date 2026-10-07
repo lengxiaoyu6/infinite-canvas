@@ -60,13 +60,19 @@ type userModelConfigInput struct {
 }
 
 type userLocalModelChannelInput struct {
-	ID              string   `json:"id"`
-	SystemChannelID string   `json:"systemChannelId"`
-	Protocol        string   `json:"protocol"`
-	Name            string   `json:"name"`
-	BaseURL         string   `json:"baseUrl"`
-	APIKey          string   `json:"apiKey"`
-	Models          []string `json:"models"`
+	ID                string                  `json:"id"`
+	SystemChannelID   string                  `json:"systemChannelId"`
+	Protocol          string                  `json:"protocol"`
+	Name              string                  `json:"name"`
+	BaseURL           string                  `json:"baseUrl"`
+	APIKey            string                  `json:"apiKey"`
+	Models            []string                `json:"models"`
+	ModelCapabilities map[string]string       `json:"modelCapabilities,omitempty"`
+	UploadAPIKey      string                  `json:"uploadApiKey,omitempty"`
+	BridgeID          string                  `json:"bridgeId,omitempty"`
+	ComfyURL          string                  `json:"comfyUrl,omitempty"`
+	WorkflowDir       string                  `json:"workflowDir,omitempty"`
+	WorkflowSummaries []model.WorkflowSummary `json:"workflowSummaries,omitempty"`
 }
 
 func SelectUserLocalModelChannelForModel(userID string, modelName string, channelID string) (model.ModelChannel, error) {
@@ -300,7 +306,7 @@ func sanitizeUserModelConfig(raw json.RawMessage) (json.RawMessage, error) {
 	}
 	channelByID := make(map[string]model.ModelChannel, len(settings.Private.Channels))
 	for _, channel := range settings.Private.Channels {
-		if !channel.Enabled || strings.TrimSpace(channel.BaseURL) == "" {
+		if !channel.Enabled || isWorkflowChannelProtocol(channel.Protocol) || strings.TrimSpace(channel.BaseURL) == "" {
 			continue
 		}
 		channel.Models = filterEnabledModels(channel.Models, availableModels)
@@ -334,7 +340,30 @@ func sanitizeUserModelConfig(raw json.RawMessage) (json.RawMessage, error) {
 			selectableChannels[systemID] = channel
 			continue
 		}
-		if id == "" || !allowPersonalChannel || seen[id] || strings.TrimSpace(item.BaseURL) == "" || strings.TrimSpace(item.APIKey) == "" {
+		if id == "" || !allowPersonalChannel || seen[id] {
+			continue
+		}
+		protocol := strings.ToLower(strings.TrimSpace(item.Protocol))
+		if protocol == "" {
+			protocol = "openai"
+		}
+		if isWorkflowChannelProtocol(protocol) {
+			item.ID = id
+			item.Protocol = protocol
+			item.Name = strings.TrimSpace(item.Name)
+			item.BaseURL = strings.TrimSpace(item.BaseURL)
+			item.APIKey = strings.TrimSpace(item.APIKey)
+			item.UploadAPIKey = strings.TrimSpace(item.UploadAPIKey)
+			item.BridgeID = strings.TrimSpace(item.BridgeID)
+			item.ComfyURL = strings.TrimSpace(item.ComfyURL)
+			item.WorkflowDir = strings.TrimSpace(item.WorkflowDir)
+			item.Models = []string{}
+			item.ModelCapabilities = nil
+			localChannels = append(localChannels, item)
+			seen[id] = true
+			continue
+		}
+		if strings.TrimSpace(item.BaseURL) == "" || strings.TrimSpace(item.APIKey) == "" {
 			continue
 		}
 		hadModels := len(models) > 0
@@ -350,17 +379,21 @@ func sanitizeUserModelConfig(raw json.RawMessage) (json.RawMessage, error) {
 				continue
 			}
 		}
-		protocol := strings.ToLower(strings.TrimSpace(item.Protocol))
-		if protocol == "" {
-			protocol = "openai"
+		capabilities := map[string]string{}
+		for _, name := range models {
+			switch capability := item.ModelCapabilities[name]; capability {
+			case "image", "video", "text", "audio":
+				capabilities[name] = capability
+			}
 		}
 		local := userLocalModelChannelInput{
-			ID:       id,
-			Protocol: protocol,
-			Name:     strings.TrimSpace(item.Name),
-			BaseURL:  strings.TrimSpace(item.BaseURL),
-			APIKey:   strings.TrimSpace(item.APIKey),
-			Models:   models,
+			ID:                id,
+			Protocol:          protocol,
+			Name:              strings.TrimSpace(item.Name),
+			BaseURL:           strings.TrimSpace(item.BaseURL),
+			APIKey:            strings.TrimSpace(item.APIKey),
+			Models:            models,
+			ModelCapabilities: capabilities,
 		}
 		localChannels = append(localChannels, local)
 		seen[id] = true

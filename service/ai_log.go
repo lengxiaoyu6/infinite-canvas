@@ -51,7 +51,7 @@ type AICallLogInput struct {
 	ChannelName     string `json:"channelName"`
 	Status          int    `json:"status"`
 	DurationMs      int64  `json:"durationMs"`
-	Credits         int    `json:"credits"`
+	Credits         float64 `json:"credits"`
 	RequestBody     string `json:"requestBody"`
 	ResponseBody    string `json:"responseBody"`
 	Error           string `json:"error"`
@@ -71,7 +71,7 @@ func SaveAICallLog(input AICallLogInput) {
 		ChannelName:     strings.TrimSpace(input.ChannelName),
 		Status:          input.Status,
 		DurationMs:      input.DurationMs,
-		Credits:         input.Credits,
+		Credits:         normalizeCredits(input.Credits),
 		RequestBody:     truncateLogText(input.RequestBody, aiLogRequestTextLimit),
 		ResponseBody:    responseBody,
 		Error:           truncateLogText(errorText, aiLogErrorTextLimit),

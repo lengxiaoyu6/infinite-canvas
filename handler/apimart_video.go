@@ -322,8 +322,9 @@ func apimartVideoConfig(modelName string) apimartInputConfig {
 		config.imageRefKind = "array_frames"
 	case strings.Contains(model, "grok-imagine"):
 		config.aspectField = "size"
-		config.hasResolution = false
-		config.hasQuality = true
+		if strings.HasPrefix(model, "grok-imagine-video") {
+			config.aspectField = "aspect_ratio"
+		}
 	case strings.Contains(model, "pixverse"):
 		config.aspectField = "size"
 		config.imageRefKind = "pixverse"
@@ -558,6 +559,11 @@ func normalizeAPIMartImageCount(payload map[string]any, config apimartInputConfi
 
 func applyAPIMartVideoDefaults(payload map[string]any, modelName string) {
 	model := normalizeAPIMartModelName(modelName)
+	if model == "happyhorse-1-0" || model == "happyhorse-1-1" {
+		if _, exists := payload["watermark"]; !exists {
+			payload["watermark"] = false
+		}
+	}
 	if model == "seedance-2-5" {
 		switch strings.ToLower(strings.TrimSpace(toStringSafe(payload["resolution"]))) {
 		case "2k", "4k":
@@ -998,6 +1004,10 @@ func setAPIMartHappyHorse11ImageReference(payload map[string]any, sourceKey stri
 	if len(values) == 0 {
 		return
 	}
+	if isAPIMartLastFrameSource(sourceKey) {
+		delete(payload, sourceKey)
+		return
+	}
 	if isAPIMartFirstFrameSource(sourceKey) || sourceKey == "first_frame_image" {
 		payload["first_frame_image"] = values[0]
 		return
@@ -1007,10 +1017,6 @@ func setAPIMartHappyHorse11ImageReference(payload map[string]any, sourceKey stri
 
 func setAPIMartHappyHorseImageReference(payload map[string]any, values []string) {
 	if len(values) == 0 {
-		return
-	}
-	if len(values) == 1 {
-		payload["first_frame_image"] = values[0]
 		return
 	}
 	payload["image_urls"] = values

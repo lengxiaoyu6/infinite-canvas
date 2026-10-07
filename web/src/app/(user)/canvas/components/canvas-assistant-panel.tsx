@@ -4,17 +4,23 @@ import { type CSSProperties, type ReactNode, useCallback, useEffect, useMemo, us
 import {
     History,
     Bot,
+    Clapperboard,
     Copy,
     Cpu,
     Gauge,
+    Group,
+    Image as ImageIcon,
     ArrowLeftRight,
+    Music2,
     PanelRightClose,
+    Pencil,
     PlugZap,
     Plus,
     RotateCcw,
     Settings2,
     Sparkles,
     Trash2,
+    Type,
     Video,
     X,
 } from "lucide-react";
@@ -49,6 +55,7 @@ import {
     type CanvasAssistantSession,
     type CanvasNodeData,
 } from "../types";
+import { isCanvasImageNodeType } from "../utils/canvas-panorama";
 import { assistantReferenceContentFromNode, buildAllCanvasResourceReferences, type CanvasResourceReference } from "../utils/canvas-resource-references";
 import { assistantToPromptReference, CanvasAssistantComposer } from "./canvas-assistant-composer";
 import { CanvasCodexConnectView } from "./canvas-codex-connect-view";
@@ -56,6 +63,21 @@ import { CanvasPromptChipInput } from "./canvas-prompt-chip-input";
 
 const PANEL_MOTION_MS = 500;
 const PANEL_MOTION_SECONDS = PANEL_MOTION_MS / 1000;
+const ASSISTANT_NODE_TYPE_META = {
+    [CanvasNodeType.Image]: { Icon: ImageIcon, label: "图片" },
+    [CanvasNodeType.Panorama]: { Icon: ImageIcon, label: "全景图" },
+    [CanvasNodeType.Video]: { Icon: Video, label: "视频" },
+    [CanvasNodeType.Audio]: { Icon: Music2, label: "音频" },
+    [CanvasNodeType.Text]: { Icon: Type, label: "文本" },
+    [CanvasNodeType.Config]: { Icon: Settings2, label: "生成配置" },
+    [CanvasNodeType.Director]: { Icon: Clapperboard, label: "导演台" },
+    [CanvasNodeType.Group]: { Icon: Group, label: "组" },
+};
+const ASSISTANT_NODE_STATUS_COLOR: Record<string, string> = {
+    success: "#22c55e",
+    loading: "#f59e0b",
+    error: "#ef4444",
+};
 
 type CanvasAssistantPanelProps = {
     canvasId: string;
@@ -67,6 +89,7 @@ type CanvasAssistantPanelProps = {
     agentConfig: CanvasAgentConfig;
     width: number;
     onWidthChange: (width: number) => void;
+    onFocusNode: (nodeId: string) => void;
     onSessionsChange: (sessions: CanvasAssistantSession[], activeSessionId: string | null) => void;
     onAgentConfigChange: (patch: Partial<CanvasAgentConfig>) => void;
     onPasteImage: (file: File) => void;
@@ -98,6 +121,7 @@ export function CanvasAssistantPanel({
     agentConfig,
     width,
     onWidthChange,
+    onFocusNode,
     onSessionsChange,
     onAgentConfigChange,
     onPasteImage,
@@ -426,6 +450,7 @@ export function CanvasAssistantPanel({
             ...effectiveConfig,
             model: effectiveConfig.textModel || effectiveConfig.model,
             apiMode: agentConfig.textApiMode,
+            textStreaming: agentConfig.textStreaming === true,
             textReasoningEnabled: agentConfig.textReasoningEnabled === true,
             activeChannelId: effectiveConfig.textChannelId || effectiveConfig.activeChannelId,
             textChannelId: effectiveConfig.textChannelId,
@@ -624,10 +649,11 @@ export function CanvasAssistantPanel({
                                 setSelectedSkills([]);
                                 setView("chat");
                             }}
+                            onRename={(id, title) => updateSession(id, (session) => ({ ...session, title, updatedAt: new Date().toISOString() }))}
                             onDelete={(id) => setDeleteChatIds([id])}
                         />
                     ) : messages.length ? (
-                        <AssistantMessages messages={messages} onRetry={retryMessage} codexMode={mode === "codex"} />
+                        <AssistantMessages messages={messages} nodeById={nodeById} onFocusNode={onFocusNode} onRetry={retryMessage} codexMode={mode === "codex"} />
                     ) : (
                         <div className="flex h-full flex-col items-center justify-center px-8 text-center">
                             <div className="grid size-12 place-items-center rounded-2xl" style={{ background: theme.node.fill }}>
@@ -695,6 +721,13 @@ export function CanvasAssistantPanel({
                             onChange={(textApiMode) => onAgentConfigChange({ textApiMode: textApiMode as CanvasAgentConfig["textApiMode"] })}
                         />
                     </div> : null}
+                    {mode !== "codex" ? <div className="flex items-center justify-between gap-6 py-2">
+                        <div className="min-w-0">
+                            <div className="text-sm font-medium">流式响应</div>
+                            <div className="mt-1 text-xs leading-5 opacity-55">开启后以流式读取文本模型回复</div>
+                        </div>
+                        <Switch checked={agentConfig.textStreaming === true} onChange={(textStreaming) => onAgentConfigChange({ textStreaming })} />
+                    </div> : null}
                     <div className="flex items-center justify-between gap-6 py-2">
                         <div className="min-w-0">
                             <div className="text-sm font-medium">自动生成图片/视频/音频</div>
@@ -751,7 +784,7 @@ const ASSISTANT_MARKDOWN_COMPONENTS: Components = {
     a: ({ node: _node, ...props }) => <a {...props} target="_blank" rel="noreferrer" className="font-medium underline underline-offset-4" />,
 };
 
-function AssistantMarkdown({ children }: { children: string }) {
+function AssistantMarkdown({ children, components }: { children: string; components: Components }) {
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
 
     return (
@@ -778,16 +811,41 @@ function AssistantMarkdown({ children }: { children: string }) {
                 } as CSSProperties
             }
         >
-            <ReactMarkdown remarkPlugins={[remarkGfm]} components={ASSISTANT_MARKDOWN_COMPONENTS} skipHtml>
+            <ReactMarkdown remarkPlugins={[remarkGfm]} components={components} skipHtml>
                 {children}
             </ReactMarkdown>
         </div>
     );
 }
 
-function AssistantMessages({ messages, onRetry, codexMode }: { messages: CanvasAssistantMessage[]; onRetry: (message: CanvasAssistantMessage) => void; codexMode?: boolean }) {
+function AssistantMessages({ messages, nodeById, onFocusNode, onRetry, codexMode }: { messages: CanvasAssistantMessage[]; nodeById: ReadonlyMap<string, CanvasNodeData>; onFocusNode: (nodeId: string) => void; onRetry: (message: CanvasAssistantMessage) => void; codexMode?: boolean }) {
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
     const copyText = useCopyText();
+    const markdownComponents = useMemo<Components>(() => ({
+        ...ASSISTANT_MARKDOWN_COMPONENTS,
+        code: ({ node, className, children, ...props }) => {
+            const canvasNode = nodeById.get(String(children).trim());
+            if (node?.position?.start.line === node?.position?.end.line && canvasNode) {
+                const { Icon, label: typeLabel } = ASSISTANT_NODE_TYPE_META[canvasNode.type];
+                const hasImage = isCanvasImageNodeType(canvasNode.type) && canvasNode.metadata?.content;
+                return (
+                    <span className="my-1 flex w-full min-w-0 items-center rounded-lg transition-opacity hover:opacity-80" style={{ background: theme.toolbar.itemHover }}>
+                        <button type="button" onClick={() => onFocusNode(canvasNode.id)} className="flex min-w-0 flex-1 items-center gap-3 px-2 py-2 text-left outline-none" title={`定位到画布节点：${canvasNode.title || typeLabel}`}>
+                            <span className="grid size-10 shrink-0 place-items-center overflow-hidden rounded-md">
+                                {hasImage ? <img src={canvasNode.metadata?.content} alt={canvasNode.title || typeLabel} className="size-full object-cover" /> : <Icon className="size-5 opacity-60" />}
+                            </span>
+                            <span className="min-w-0 flex-1 space-y-0.5">
+                                <span className="block truncate text-sm font-medium leading-snug">{canvasNode.title || `${typeLabel}节点`}</span>
+                                <span className="block truncate text-xs leading-snug opacity-50">{canvasNode.type === CanvasNodeType.Text ? canvasNode.metadata?.content || canvasNode.metadata?.prompt || "" : typeLabel}</span>
+                            </span>
+                            {canvasNode.metadata?.status && canvasNode.metadata.status !== "idle" ? <span className="size-1.5 shrink-0 rounded-full" style={{ background: ASSISTANT_NODE_STATUS_COLOR[canvasNode.metadata.status] || "transparent" }} /> : null}
+                        </button>
+                    </span>
+                );
+            }
+            return <code {...props} className={className}>{children}</code>;
+        },
+    }), [nodeById, onFocusNode, theme]);
     let previousUserSkills: CanvasAgentSkillSelection[] = [];
 
     return (
@@ -815,7 +873,7 @@ function AssistantMessages({ messages, onRetry, codexMode }: { messages: CanvasA
                                         {codexMode ? "Codex" : "Agent"}
                                     </div>
                                 ) : null}
-                                {message.role === "assistant" ? <AssistantMarkdown>{message.text}</AssistantMarkdown> : <UserMessageContent message={message} showSkills={showSkills} />}
+                                {message.role === "assistant" ? <AssistantMarkdown components={markdownComponents}>{message.text}</AssistantMarkdown> : <UserMessageContent message={message} showSkills={showSkills} />}
                             </div>
                         ) : null}
                         {running ? <ImageGenerationPending compact label={message.activity || "正在执行"} className="w-[250px] rounded-2xl border" /> : null}
@@ -838,6 +896,7 @@ function AssistantHistory({
     checkedIds,
     onToggleChecked,
     onOpen,
+    onRename,
     onDelete,
 }: {
     sessions: CanvasAssistantSession[];
@@ -845,19 +904,39 @@ function AssistantHistory({
     checkedIds: string[];
     onToggleChecked: (id: string, checked: boolean) => void;
     onOpen: (id: string) => void;
+    onRename: (id: string, title: string) => void;
     onDelete: (id: string) => void;
 }) {
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
+    const [editingId, setEditingId] = useState<string | null>(null);
 
     return (
         <div className="space-y-1">
             {sessions.map((session) => (
                 <div key={session.id} className="group flex items-center gap-2 rounded-lg px-2 py-1.5 transition" style={session.id === activeSession?.id ? { background: theme.node.fill } : undefined}>
                     <input type="checkbox" className="size-4" style={{ accentColor: theme.node.text }} checked={checkedIds.includes(session.id)} onChange={(event) => onToggleChecked(session.id, event.target.checked)} />
-                    <button type="button" className="min-w-0 flex-1 text-left text-sm" onClick={() => onOpen(session.id)}>
-                        <span className="block truncate">{session.title}</span>
-                        <span className="text-xs opacity-50">{session.messages.length} 条消息</span>
-                    </button>
+                    <div className="min-w-0 flex-1 text-sm">
+                        {editingId === session.id ? (
+                            <input
+                                autoFocus
+                                defaultValue={session.title}
+                                onBlur={(event) => {
+                                    const title = event.currentTarget.value.trim();
+                                    if (title && title !== session.title) onRename(session.id, title);
+                                    setEditingId(null);
+                                }}
+                                onKeyDown={(event) => event.key === "Enter" && event.currentTarget.blur()}
+                                className="block w-full rounded-sm bg-transparent outline-none"
+                                style={{ color: theme.node.text, boxShadow: `inset 0 0 0 1px ${theme.node.muted}` }}
+                            />
+                        ) : (
+                            <button type="button" className="block w-full text-left" onClick={() => onOpen(session.id)}>
+                                <span className="block truncate">{session.title}</span>
+                            </button>
+                        )}
+                        <span className="block text-xs opacity-50">{session.messages.length} 条消息</span>
+                    </div>
+                    <Button type="text" shape="circle" size="small" className="opacity-0 transition group-hover:opacity-100" icon={<Pencil className="size-3.5" />} onClick={() => setEditingId(session.id)} title="重命名" />
                     <Button type="text" shape="circle" size="small" className="opacity-0 transition group-hover:opacity-100" icon={<Trash2 className="size-3.5" />} onClick={() => onDelete(session.id)} title="删除" />
                 </div>
             ))}

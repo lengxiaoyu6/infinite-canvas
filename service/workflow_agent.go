@@ -45,7 +45,7 @@ func DraftCreativeWorkflow(ctx context.Context, request WorkflowAgentDraftReques
 		return WorkflowAgentDraftResponse{}, err
 	}
 
-	credits := 0
+	credits := 0.0
 	chargedCredits := request.ChannelMode != "local"
 	if chargedCredits {
 		credits, _ = ModelCost(modelName)
@@ -207,7 +207,7 @@ func workflowDraftChannel(userID string, request WorkflowAgentDraftRequest, mode
 		}
 		return channel, nil
 	}
-	return SelectModelChannelForModel(modelName, request.ChannelID)
+	return SelectModelChannelForModel(modelName, request.ChannelID, true)
 }
 
 func workflowAgentMessages(prompt string, references []string) []map[string]any {

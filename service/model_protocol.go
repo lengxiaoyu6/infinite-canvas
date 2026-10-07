@@ -15,6 +15,8 @@ const (
 	ModelChannelProtocolKIE      = "kie"
 	ModelChannelProtocol88API    = "88api"
 	ModelChannelProtocolAutoDL   = "autodl"
+	ModelChannelProtocolArk      = "ark"
+	ModelChannelProtocolTokenDance = "tokendance"
 )
 
 type modelProtocolAdapter struct {
@@ -30,7 +32,7 @@ type modelProtocolRule struct {
 }
 
 var modelProtocolRegistry map[string]modelProtocolAdapter
-var modelProtocolIDs = []string{ModelChannelProtocolOpenAI, ModelChannelProtocolGemini, ModelChannelProtocolGrok2API, ModelChannelProtocolMiniMax, ModelChannelProtocolAPIMart, ModelChannelProtocolKIE, ModelChannelProtocolMiMo, ModelChannelProtocol88API, ModelChannelProtocolAutoDL}
+var modelProtocolIDs = []string{ModelChannelProtocolOpenAI, ModelChannelProtocolGemini, ModelChannelProtocolGrok2API, ModelChannelProtocolMiniMax, ModelChannelProtocolAPIMart, ModelChannelProtocolKIE, ModelChannelProtocolMiMo, ModelChannelProtocol88API, ModelChannelProtocolAutoDL, ModelChannelProtocolArk, ModelChannelProtocolTokenDance}
 
 func init() {
 	compatible := modelProtocolAdapter{
@@ -41,7 +43,7 @@ func init() {
 		models:    fetchOpenAIAdminChannelModels,
 		testModel: testOpenAIChannelModel,
 	}
-	modelProtocolRegistry = make(map[string]modelProtocolAdapter, 10)
+	modelProtocolRegistry = make(map[string]modelProtocolAdapter, 11)
 	for _, id := range modelProtocolIDs {
 		modelProtocolRegistry[id] = compatible
 	}
@@ -110,7 +112,10 @@ func init() {
 	modelProtocolRegistry[ModelChannelProtocol88API] = api88
 	ark := compatible
 	ark.testModel = testArkSeedanceChannelModel
-	modelProtocolRegistry["model:ark-seedance"] = ark
+	modelProtocolRegistry[ModelChannelProtocolArk] = ark
+	tokenDance := compatible
+	tokenDance.buildURL = BuildTokenDanceChannelURL
+	modelProtocolRegistry[ModelChannelProtocolTokenDance] = tokenDance
 	glm := compatible
 	glm.testModel = testGLMTTSChannelModel
 	modelProtocolRegistry["model:glm-tts"] = glm
@@ -122,6 +127,7 @@ var modelDiscoveryRules = []modelProtocolRule{
 	{ModelChannelProtocolGemini, func(channel model.ModelChannel, _ string) bool { return IsGeminiChannel(channel) }},
 	{ModelChannelProtocolMiniMax, func(channel model.ModelChannel, _ string) bool { return IsMiniMaxChannel(channel) }},
 	{ModelChannelProtocolMiMo, func(channel model.ModelChannel, _ string) bool { return IsMiMoChannel(channel) }},
+	{ModelChannelProtocolArk, func(channel model.ModelChannel, _ string) bool { return IsArkChannel(channel) }},
 	{ModelChannelProtocolKIE, func(channel model.ModelChannel, _ string) bool { return isKIEAdminChannel(channel) }},
 }
 
@@ -131,9 +137,7 @@ var modelConfigTestRules = []modelProtocolRule{
 	{ModelChannelProtocol88API, func(channel model.ModelChannel, _ string) bool {
 		return strings.EqualFold(strings.TrimSpace(channel.Protocol), ModelChannelProtocol88API)
 	}},
-	{"model:ark-seedance", func(channel model.ModelChannel, modelName string) bool {
-		return isArkAgentPlanChannel(channel) || isSeedanceModelName(modelName)
-	}},
+	{ModelChannelProtocolArk, func(channel model.ModelChannel, _ string) bool { return IsArkChannel(channel) }},
 }
 
 var modelGenerationTestRules = []modelProtocolRule{
@@ -156,6 +160,14 @@ func modelProtocolForChannel(channel model.ModelChannel) modelProtocolAdapter {
 		}
 	}
 	return modelProtocolRegistry[ModelChannelProtocolOpenAI]
+}
+
+func IsArkChannel(channel model.ModelChannel) bool {
+	return strings.EqualFold(strings.TrimSpace(channel.Protocol), ModelChannelProtocolArk)
+}
+
+func IsTokenDanceChannel(channel model.ModelChannel) bool {
+	return strings.EqualFold(strings.TrimSpace(channel.Protocol), ModelChannelProtocolTokenDance)
 }
 
 func matchModelProtocol(rules []modelProtocolRule, channel model.ModelChannel, modelName string) (modelProtocolAdapter, bool) {

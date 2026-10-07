@@ -51,6 +51,7 @@ export type UserStorageProvider = UserS3StorageProvider | UserWebDAVStorageProvi
 
 type UploadImageOptions = {
     localOnly?: boolean;
+    token?: string;
 };
 
 export type StorageConfig = {
@@ -248,7 +249,7 @@ async function fetchImageBlob(url: string, fallbackMessage: string) {
 export async function uploadImage(input: string | Blob, options: UploadImageOptions = {}): Promise<UploadedImage> {
     const blob = typeof input === "string" ? await fetchImageBlob(input, "图片拉取失败") : input;
     if (!options.localOnly) {
-        const serverUpload = await maybeUploadImageToServer(blob);
+        const serverUpload = await maybeUploadImageToServer(blob, options.token);
         if (serverUpload) return serverUpload;
     }
     const storageKey = `image:${nanoid()}`;
@@ -346,13 +347,16 @@ async function resolveLocalImageUrl(storageKey: string) {
     return url;
 }
 
-async function maybeUploadImageToServer(blob: Blob): Promise<UploadedImage | null> {
+async function maybeUploadImageToServer(blob: Blob, tokenOverride?: string): Promise<UploadedImage | null> {
     const config = await loadStorageConfig().catch(() => null);
+    if (tokenOverride !== undefined && useUserStore.getState().token !== tokenOverride) {
+        throw new Error("登录状态已变化");
+    }
     const userProvider = config?.allowUserProvider ? loadUserStorageProvider() : null;
     const canUseGlobalProvider = config ? canUseGlobalStorage(config) : false;
     const useServerStorage = canUseGlobalProvider || Boolean(userProvider);
     if (!config || !useServerStorage) return null;
-    const token = useUserStore.getState().token;
+    const token = tokenOverride === undefined ? useUserStore.getState().token : tokenOverride;
     if (userProvider?.type === "webdav") {
         const directUpload = await uploadWebDAVImageDirect(blob, `image-${nanoid()}.${imageExtension(blob.type)}`, userProvider);
         if (directUpload) return directUpload;

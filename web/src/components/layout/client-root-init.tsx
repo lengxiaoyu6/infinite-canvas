@@ -7,6 +7,7 @@ import { usePathname } from "next/navigation";
 import { fetchUserConfig } from "@/services/api/user-config";
 import { App } from "antd";
 
+import { replaceWorkflowChannels } from "@/services/workflow-channel-storage";
 import { STORAGE_SYNC_FAILED_EVENT, defaultUserStorageProvider, defaultUserWebDAVStorageProvider, saveUserStorageProvider, saveUserWebDAVStorageProvider } from "@/services/image-storage";
 import { useConfigStore, useIsModelConfigReady } from "@/stores/use-config-store";
 import { useUserStore } from "@/stores/use-user-store";
@@ -27,6 +28,7 @@ export function ClientRootInit({ children }: { children: ReactNode }) {
     const failUserModelConfigLoad = useConfigStore((state) => state.failUserModelConfigLoad);
     const isModelConfigReady = useIsModelConfigReady();
     const isLoginPage = pathname === "/login" || pathname === "/admin/login";
+    const isTokenDanceCallback = pathname === "/tokendance/callback";
     const adminRemoteTokenRef = useRef("");
 
     useEffect(() => {
@@ -51,10 +53,14 @@ export function ClientRootInit({ children }: { children: ReactNode }) {
             adminRemoteTokenRef.current = "";
             return;
         }
+        if (isTokenDanceCallback) {
+            adminRemoteTokenRef.current = token;
+            return;
+        }
         if (!isModelConfigReady || adminRemoteTokenRef.current === token) return;
         adminRemoteTokenRef.current = token;
         if (channelMode !== "remote") updateConfig("channelMode", "remote");
-    }, [channelMode, isModelConfigReady, token, updateConfig, user?.role]);
+    }, [channelMode, isModelConfigReady, isTokenDanceCallback, token, updateConfig, user?.role]);
 
     useEffect(() => {
         if (!isUserReady) return;
@@ -64,15 +70,27 @@ export function ClientRootInit({ children }: { children: ReactNode }) {
         }
         const userId = user.id;
         switchModelConfigOwner(userId);
+        if (isTokenDanceCallback) return;
+        const accountToken = token;
         const loadVersion = beginUserModelConfigLoad(userId);
         if (!loadVersion) return;
         let canceled = false;
-        void fetchUserConfig(token)
-            .then((payload) => {
-                if (canceled) return;
+        void fetchUserConfig(accountToken)
+            .then(async (payload) => {
+                if (canceled || useUserStore.getState().token !== accountToken || useUserStore.getState().user?.id !== userId) return;
                 const syncS3 = payload.modelConfig?.syncStorageConfig === true;
                 const syncWebDAV = payload.modelConfig?.syncWebDAVStorageConfig === true;
-                applyUserModelConfig(userId, loadVersion, payload.modelConfig);
+                const { workflowChannels, ...modelConfig } = payload.modelConfig || {};
+                let workflowsReady = true;
+                if (workflowChannels !== undefined) {
+                    try {
+                        await replaceWorkflowChannels(userId, workflowChannels);
+                    } catch {
+                        workflowsReady = false;
+                    }
+                }
+                if (canceled || useUserStore.getState().token !== accountToken || useUserStore.getState().user?.id !== userId || useConfigStore.getState().modelConfigLoadVersion !== loadVersion) return;
+                applyUserModelConfig(userId, loadVersion, { ...modelConfig, workflowSyncTouched: workflowsReady });
                 if (syncS3 && payload.storageProvider?.s3) {
                     saveUserStorageProvider({
                         ...defaultUserStorageProvider(),
@@ -94,7 +112,7 @@ export function ClientRootInit({ children }: { children: ReactNode }) {
         return () => {
             canceled = true;
         };
-    }, [applyUserModelConfig, beginUserModelConfigLoad, failUserModelConfigLoad, isUserReady, switchModelConfigOwner, token, user?.id]);
+    }, [applyUserModelConfig, beginUserModelConfigLoad, failUserModelConfigLoad, isTokenDanceCallback, isUserReady, switchModelConfigOwner, token, user?.id]);
 
     return <>{children}</>;
 }

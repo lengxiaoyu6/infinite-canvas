@@ -17,8 +17,13 @@ import (
 func TestModelProtocolRequestGoldens(t *testing.T) {
 	blockProtocolNetwork(t)
 	tests := []struct {
-		name, protocol, model, endpoint, body, want, uploads string
+		name, protocol, model, endpoint, url, body, want, uploads string
 	}{
+		{
+			name: "ark seedance", protocol: "ark", model: "doubao-seedance-2.0",
+			body: `{"prompt":"scene","seconds":15,"size":"16:9","resolution_name":"4k","video_generate_audio":true,"video_watermark":false,"input_reference[]":["https://media.invalid/image.png"],"first_frame_url":"https://media.invalid/first.png","last_frame_url":"https://media.invalid/last.png","video_reference[]":["https://media.invalid/video.mp4"],"audio_reference[]":["https://media.invalid/audio.mp3"]}`,
+			want: `{"model":"doubao-seedance-2.0","content":[{"type":"text","text":"scene"},{"type":"image_url","image_url":{"url":"https://media.invalid/image.png"},"role":"reference_image"},{"type":"image_url","image_url":{"url":"https://media.invalid/first.png"},"role":"first_frame"},{"type":"image_url","image_url":{"url":"https://media.invalid/last.png"},"role":"last_frame"},{"type":"video_url","video_url":{"url":"https://media.invalid/video.mp4"},"role":"reference_video"},{"type":"audio_url","audio_url":{"url":"https://media.invalid/audio.mp3"},"role":"reference_audio"}],"duration":15,"ratio":"16:9","resolution":"4k","generate_audio":true,"watermark":false}`,
+		},
 		{
 			name: "kie wrapper precedence", protocol: "kie", model: "future-model",
 			body: `{"prompt":"outer","duration":9,"seconds":"7s","input":{"prompt":"inner","custom":false,"n":2,"stream":true},"custom":true,"size":"1920x1080","resolution":"1080","quality":"high","output_format":"png","callbackUrl":"https://media.invalid/second","callBackUrl":" https://media.invalid/first "}`,
@@ -81,12 +86,16 @@ func TestModelProtocolRequestGoldens(t *testing.T) {
 		},
 		{
 			name: "kie upload metadata", protocol: "kie", model: "bytedance/seedance-2", endpoint: "/videos",
-			body:    `{"prompt":"scene","image":"https://direct-reference.invalid/run/image/0","video_reference":["https://direct-reference.invalid/run/video/0"],"audio_reference":["https://direct-reference.invalid/run/audio/0"]}`,
+			url:     "https://upstream.invalid/v1/jobs/createTask",
+			body:    `{"prompt":"scene","input_reference[]":["https://direct-reference.invalid/run/image/0","https://direct-reference.invalid/run/image/1"],"video_reference[]":["https://direct-reference.invalid/run/video/0"],"audio_reference[]":["https://direct-reference.invalid/run/audio/0"]}`,
+			want:    `{"model":"bytedance/seedance-2","input":{"prompt":"scene","reference_image_urls":["https://direct-reference.invalid/run/image/0","https://direct-reference.invalid/run/image/1"],"reference_video_urls":["https://direct-reference.invalid/run/video/0"],"reference_audio_urls":["https://direct-reference.invalid/run/audio/0"],"return_last_frame":false}}`,
 			uploads: `{"image":{"url":"https://kieai.redpandaai.co/api/file-stream-upload","fileField":"file","fileNameField":"fileName","extraFields":{"uploadPath":"images/user-uploads"},"responsePaths":["data.downloadUrl","data.fileUrl","data.url"]},"video":{"url":"https://kieai.redpandaai.co/api/file-stream-upload","fileField":"file","fileNameField":"fileName","extraFields":{"uploadPath":"videos/user-uploads"},"responsePaths":["data.downloadUrl","data.fileUrl","data.url"]},"audio":{"url":"https://kieai.redpandaai.co/api/file-stream-upload","fileField":"file","fileNameField":"fileName","extraFields":{"uploadPath":"audios/user-uploads"},"responsePaths":["data.downloadUrl","data.fileUrl","data.url"]}}`,
 		},
 		{
 			name: "apimart upload metadata", protocol: "apimart", model: "gpt-image-2-apimart", endpoint: "/images/edits",
-			body:    `{"prompt":"scene","image":"https://direct-reference.invalid/run/image/0"}`,
+			url:     "https://upstream.invalid/v1/images/generations",
+			body:    `{"prompt":"scene","image":["https://direct-reference.invalid/run/image/0","https://direct-reference.invalid/run/image/1"]}`,
+			want:    `{"model":"gpt-image-2-apimart","prompt":"scene","image_urls":["https://direct-reference.invalid/run/image/0","https://direct-reference.invalid/run/image/1"]}`,
 			uploads: `{"image":{"url":"https://upstream.invalid/v1/uploads/images","fileField":"file","responsePaths":["url"]}}`,
 		},
 	}
@@ -106,6 +115,9 @@ func TestModelProtocolRequestGoldens(t *testing.T) {
 			}
 			if plan.Provider != test.protocol || plan.ContentType != "application/json" {
 				t.Fatalf("unexpected direct plan: %#v", plan)
+			}
+			if test.url != "" && plan.URL != test.url {
+				t.Fatalf("got URL %q, want %q", plan.URL, test.url)
 			}
 			if test.want != "" {
 				assertProtocolJSONValue(t, plan.Body, test.want)

@@ -7,6 +7,7 @@ data/
 /director/
 *.log
 *.tsbuildinfo
+web/public/InfiniteCanvas-ComfyBridge*
 .DS_Store
 .idea
 .ace-tool/

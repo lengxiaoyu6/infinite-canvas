@@ -4,11 +4,13 @@ import { isMiniMaxChannel, miniMaxModels } from "@/lib/minimax-video";
 import { dataUrlToFile } from "@/lib/image-utils";
 import { isKIESeedreamLayerDecompositionModel } from "@/lib/kie-models";
 import { isMimoChannel, mimoModels } from "@/lib/mimo-tts";
+import { modelChannelAttributionHeaders } from "@/lib/model-channel";
 import { dataUrlToGeminiInlineData, geminiActionUrl, geminiDirectHeaders, geminiErrorMessage, isGeminiConfig, normalizeGeminiBaseUrl } from "@/lib/gemini";
 import { autoSyncImage, imageToDataUrl, resolveImageUrl, type UploadedImage } from "@/services/image-storage";
 import { buildApiUrl, channelIdForActiveModel, channelProtocolForConfig, directAIProviderForConfig, localChannelForActiveModel, type AiConfig } from "@/stores/use-config-store";
 import { useUserStore } from "@/stores/use-user-store";
 import { fetchAutoDLWorkflows } from "./autodl";
+import { tokenDanceRecoveryMessage } from "./protocols/tokendance";
 import type { ReferenceImage } from "@/types/image";
 import { nanoid } from "nanoid";
 
@@ -49,6 +51,7 @@ export type CanvasImageTask = {
     channelId?: string;
     userChannelId?: string;
     channelName?: string;
+    workflowRef?: string;
     model?: string;
     prompt?: string;
     status: "queued" | "processing" | "completed" | "failed" | string;
@@ -410,7 +413,7 @@ function parseServerSentEventBlock(block: string) {
     return JSON.parse(data) as Record<string, unknown>;
 }
 
-async function readJsonServerSentEvents(response: Response, onEvent: (event: Record<string, unknown>) => void) {
+export async function readJsonServerSentEvents(response: Response, onEvent: (event: Record<string, unknown>) => void) {
     if (!response.body) throw new ImageRequestError("接口未返回可读取的流式响应", `${response.status} ${response.statusText}`);
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
@@ -450,7 +453,7 @@ async function readJsonServerSentEvents(response: Response, onEvent: (event: Rec
     return events;
 }
 
-function isEventStreamResponse(response: Response) {
+export function isEventStreamResponse(response: Response) {
     return response.headers.get("Content-Type")?.toLowerCase().includes("text/event-stream") ?? false;
 }
 
@@ -548,6 +551,7 @@ export function aiHeaders(config: AiConfig, contentType?: string) {
     if (isGeminiConfig(config)) return geminiDirectHeaders(config);
     return {
         Authorization: `Bearer ${localChannelForActiveModel(config)?.apiKey || config.apiKey}`,
+        ...modelChannelAttributionHeaders(channelProtocolForConfig(config)),
         ...(contentType ? { "Content-Type": contentType } : {}),
     };
 }
@@ -1181,7 +1185,11 @@ export async function requestImageQuestion(config: AiConfig, messages: ChatCompl
             });
             if (!response.ok) {
                 const error = await fetchErrorDetail(response, "请求失败");
-                throw new ImageRequestError(error.message, error.detail);
+                throw new ImageRequestError(
+                    tokenDanceRecoveryMessage(channelProtocolForConfig(config) === "tokendance" ? response.headers.get("TokenDance-Recovery-Action") : null)
+                        || error.message,
+                    error.detail,
+                );
             }
             if (isEventStreamResponse(response)) {
                 await readJsonServerSentEvents(response, (event) => {
@@ -1223,10 +1231,30 @@ export async function fetchImageModels(config: AiConfig) {
     if (channel?.protocol === "autodl") return (await fetchAutoDLWorkflows(baseUrl)).map((workflow) => workflow.uuid);
     if (isMiniMaxChannel(channel)) return [...miniMaxModels];
     if (isMimoChannel(channel || { baseUrl: config.baseUrl })) return [...mimoModels];
+    if (channel?.protocol === "ark" && buildApiUrl(channel.baseUrl, "").toLowerCase().endsWith("/api/plan/v3")) return [
+        "doubao-seed-2.0-mini",
+        "doubao-seed-2.0-lite",
+        "deepseek-v4-flash",
+        "glm-5.3-flash",
+        "doubao-seed-2.1-turbo",
+        "doubao-seed-evolving",
+        "minimax-m3",
+        "glm-5.3",
+        "kimi-k2.7-code",
+        "deepseek-v4-pro",
+        "kimi-k3",
+        "deepseek-v4.1-flash",
+        "doubao-seedance-2.5",
+        "doubao-seedance-2.0",
+        "doubao-seedance-2.0-fast",
+        "doubao-seedance-2.0-mini",
+        "doubao-seedance-1.5-pro",
+    ];
     try {
         const response = await axios.get<{ data?: Array<{ id?: string }>; error?: { message?: string } }>(buildApiUrl(baseUrl, "/models"), {
             headers: {
                 Authorization: `Bearer ${apiKey}`,
+                ...modelChannelAttributionHeaders(channel?.protocol || ""),
             },
             timeout: IMAGE_REQUEST_TIMEOUT_SECONDS * 1000,
         });
