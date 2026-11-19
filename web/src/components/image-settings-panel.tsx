@@ -1,11 +1,12 @@
 import { type ReactNode, useState } from "react";
-import { ConfigProvider, Switch } from "antd";
+import { ConfigProvider, Select, Switch } from "antd";
 import { useTranslation } from "react-i18next";
 
 import i18n from "@/i18n";
 import { type CanvasTheme } from "@/lib/canvas-theme";
 import { computeMediaSize, inferMediaRatio, inferMediaScale, mediaRatioOptions, mediaScaleOptions, readMediaDimensions } from "@/lib/media-size";
-import type { AiConfig } from "@/stores/use-config-store";
+import { defaultConfig, resolveModelRequestConfig, type AiConfig } from "@/stores/use-config-store";
+import type { ImageOutputFormat } from "@/types/image";
 
 const qualityOptions = [
     { value: "auto", labelKey: "auto" },
@@ -23,7 +24,7 @@ export const imageScaleOptions = mediaScaleOptions.map((value) => ({ value, labe
 
 type ImageSettingsPanelProps = {
     config: AiConfig;
-    onConfigChange: (key: "quality" | "size" | "count" | "background", value: string) => void;
+    onConfigChange: <K extends "quality" | "size" | "count" | "background" | "imageOutputFormat" | "imageFrameCount">(key: K, value: AiConfig[K]) => void;
     theme: CanvasTheme;
     showTitle?: boolean;
     className?: string;
@@ -35,6 +36,8 @@ export function ImageSettingsPanel({ config, onConfigChange, theme, showTitle = 
     const { t } = useTranslation();
     const [snapDimensionToStep, setSnapDimensionToStep] = useState(true);
     const quality = config.quality || "auto";
+    const outputFormat = config.imageOutputFormat === "gif" ? "gif" : "png";
+    const supportsGif = resolveModelRequestConfig(config, config.model || config.imageModel).apiFormat === "openai";
     const count = Math.max(1, Math.min(maxCount, Math.floor(Math.abs(Number(config.count)) || 1)));
     const activeSize = config.size || "auto";
     const transparentBackground = config.background === "transparent";
@@ -63,6 +66,31 @@ export function ImageSettingsPanel({ config, onConfigChange, theme, showTitle = 
                 }}
             >
                 {showTitle ? <div className="text-lg font-semibold">{t("settingsPanels.image.title")}</div> : null}
+                <div className="relative space-y-2.5">
+                    <SettingTitle color={theme.node.muted}>{t("settingsPanels.image.outputFormat")}</SettingTitle>
+                    <Select<ImageOutputFormat>
+                        aria-label={t("settingsPanels.image.outputFormat")}
+                        className="w-full"
+                        value={outputFormat}
+                        options={[{ value: "png", label: "PNG" }, { value: "gif", label: "GIF", disabled: !supportsGif }]}
+                        onChange={(value) => onConfigChange("imageOutputFormat", value)}
+                        getPopupContainer={(trigger) => trigger.parentElement!}
+                    />
+                    {outputFormat === "gif" ? <div className="text-xs" style={{ color: theme.node.muted }}>{t("settingsPanels.image.gifHint")}</div> : null}
+                </div>
+                {outputFormat === "gif" ? (
+                    <div className="relative space-y-2.5">
+                        <SettingTitle color={theme.node.muted}>{t("settingsPanels.image.frameCount")}</SettingTitle>
+                        <Select<string>
+                            aria-label={t("settingsPanels.image.frameCount")}
+                            className="w-full"
+                            value={config.imageFrameCount || defaultConfig.imageFrameCount}
+                            options={Array.from({ length: 15 }, (_, index) => ({ value: String(index + 2), label: t("settingsPanels.image.frames", { count: index + 2 }) }))}
+                            onChange={(value) => onConfigChange("imageFrameCount", value)}
+                            getPopupContainer={(trigger) => trigger.parentElement!}
+                        />
+                    </div>
+                ) : null}
                 <div className="space-y-2.5">
                     <SettingTitle color={theme.node.muted}>{t("settingsPanels.image.quality")}</SettingTitle>
                     <div className="grid grid-cols-3 gap-2.5">
@@ -179,6 +207,7 @@ function OptionPill({ selected, theme, onClick, children }: { selected: boolean;
         <button
             type="button"
             className="h-9 cursor-pointer rounded-full border px-2 text-sm transition hover:opacity-80"
+            aria-pressed={selected}
             style={{ background: "transparent", borderColor: selected ? theme.node.text : theme.node.stroke, color: theme.node.text }}
             onMouseDown={(event) => event.stopPropagation()}
             onClick={onClick}

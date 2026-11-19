@@ -1,6 +1,11 @@
 import i18n from "@/i18n";
 import type { ReferenceImage } from "@/types/image";
 
+export function imageMimeType(format: string) {
+    if (format === "svg") return "image/svg+xml";
+    return ["png", "webp", "jpeg", "gif"].includes(format) ? `image/${format}` : "image/png";
+}
+
 export function formatBytes(bytes: number) {
     if (!Number.isFinite(bytes) || bytes <= 0) {
         return "";

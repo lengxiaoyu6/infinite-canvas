@@ -63,6 +63,7 @@ function safeFileName(value: string) {
 }
 
 function fileExtension(mimeType: string, kind: Asset["kind"]) {
+    if (mimeType.includes("svg")) return "svg";
     if (mimeType.includes("png")) return "png";
     if (mimeType.includes("jpeg")) return "jpg";
     if (mimeType.includes("webp")) return "webp";

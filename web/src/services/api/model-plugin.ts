@@ -1,6 +1,7 @@
 import axios, { type AxiosRequestConfig } from "axios";
 
 import i18n from "@/i18n";
+import { imageMimeType } from "@/lib/image-utils";
 import { buildApiUrl, withLocalProxy, type AiConfig, type ModelCapability } from "@/stores/use-config-store";
 
 type RequestOptions = { signal?: AbortSignal };
@@ -238,6 +239,8 @@ export function getPluginTemplates(): Record<ModelCapability, PluginTemplate[]> 
  * @param {string} params.size - output size, e.g. "1024x1024" or "auto"
  * @param {string} params.quality - "low" | "medium" | "high" | "xhigh" | "max"
  * @param {number} params.count - number of images
+ * @param {string} params.outputFormat - "png" or "gif"; GIF requires model/project support
+ * @param {number} [params.frameCount] - GIF frame count, 2–16; defaults to 9
  * @param {string} [params.background] - "transparent" when requested
  * @param {string} model
  * @param {string} baseUrl
@@ -253,6 +256,8 @@ async function generateImage({
     quality,
     count,
     background,
+    outputFormat = "png",
+    frameCount = 9,
   },
   model,
   baseUrl,
@@ -274,12 +279,16 @@ async function generateImage({
         size: size,
         quality: quality,
         background: background,
-        response_format: "b64_json",
+        output_format: outputFormat,
+        ...(outputFormat === "gif" ? { frame_count: frameCount } : {}),
+        ...(/gpt-image/.test(model) || outputFormat === "gif" ? {} : { response_format: "b64_json" }),
       },
     });
     const urls = [];
+    const format = data.output_format || outputFormat;
+    const mimeType = format === "svg" ? "image/svg+xml" : "image/" + format;
     for (const item of data.data || []) {
-      urls.push(item.b64_json ? \`data:image/png;base64,\${item.b64_json}\` : item.url);
+      urls.push(item.b64_json ? \`data:\${mimeType};base64,\${item.b64_json}\` : item.url);
     }
     return urls;
   }
@@ -291,7 +300,9 @@ async function generateImage({
   form.set("size", size);
   form.set("quality", quality);
   form.set("background", background);
-  form.set("response_format", "b64_json");
+  form.set("output_format", outputFormat);
+  if (outputFormat === "gif") form.set("frame_count", String(frameCount));
+  if (!/gpt-image/.test(model) && outputFormat !== "gif") form.set("response_format", "b64_json");
   const imageField = images.length > 1 ? "image[]" : "image";
   for (const dataUrl of images) {
     form.append(imageField, await (await fetch(dataUrl)).blob(), "ref.png");
@@ -305,8 +316,10 @@ async function generateImage({
     data: form,
   });
   const urls = [];
+  const format = edited.output_format || outputFormat;
+  const mimeType = format === "svg" ? "image/svg+xml" : "image/" + format;
   for (const item of edited.data || []) {
-    urls.push(item.b64_json ? \`data:image/png;base64,\${item.b64_json}\` : item.url);
+    urls.push(item.b64_json ? \`data:\${mimeType};base64,\${item.b64_json}\` : item.url);
   }
   return urls;
 }
@@ -972,7 +985,7 @@ return await generateText({
 }
 
 /** Normalize whatever an image script returns into the app's generated-image shape. */
-export function normalizePluginImages(result: unknown): string[] {
+export function normalizePluginImages(result: unknown, outputFormat = "png"): string[] {
     const items = Array.isArray(result) ? result : [result];
     const urls = items
         .map((item) => {
@@ -981,7 +994,7 @@ export function normalizePluginImages(result: unknown): string[] {
                 const record = item as Record<string, unknown>;
                 if (typeof record.dataUrl === "string") return record.dataUrl;
                 if (typeof record.url === "string") return record.url;
-                if (typeof record.b64_json === "string") return `data:image/png;base64,${record.b64_json}`;
+                if (typeof record.b64_json === "string") return `data:${imageMimeType(typeof record.output_format === "string" ? record.output_format : outputFormat)};base64,${record.b64_json}`;
             }
             return "";
         })

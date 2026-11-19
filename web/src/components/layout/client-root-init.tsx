@@ -4,6 +4,7 @@ import { App } from "antd";
 import { useTranslation } from "react-i18next";
 
 import { useConfigStore } from "@/stores/use-config-store";
+import { useImageGenerationStore } from "@/stores/use-image-generation-store";
 import { usePromptSourceScheduler } from "@/hooks/use-prompt-source-scheduler";
 
 export function ClientRootInit({ children }: { children: ReactNode }) {
@@ -13,7 +14,19 @@ export function ClientRootInit({ children }: { children: ReactNode }) {
     const importChannelCredentials = useConfigStore((state) => state.importChannelCredentials);
     const openConfigDialog = useConfigStore((state) => state.openConfigDialog);
 
+    const imageGenerationPending = useImageGenerationStore((state) => state.logs.some((log) => log.status === "pending"));
+
     usePromptSourceScheduler();
+
+    useEffect(() => {
+        if (!imageGenerationPending) return;
+        const handleBeforeUnload = (event: BeforeUnloadEvent) => {
+            event.preventDefault();
+            event.returnValue = "";
+        };
+        window.addEventListener("beforeunload", handleBeforeUnload);
+        return () => window.removeEventListener("beforeunload", handleBeforeUnload);
+    }, [imageGenerationPending]);
 
     useEffect(() => {
         if (handledConfigParams.current) return;

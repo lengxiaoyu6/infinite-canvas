@@ -1,3 +1,5 @@
+import type { ImageOutputFormat } from "./image";
+
 export type Position = {
     x: number;
     y: number;
@@ -57,6 +59,8 @@ export type CanvasNodeMetadata = {
     reasoningEffort?: "auto" | "low" | "medium" | "high" | "xhigh";
     size?: string;
     quality?: string;
+    imageOutputFormat?: ImageOutputFormat;
+    imageFrameCount?: string;
     background?: string;
     count?: number;
     textCount?: number;
